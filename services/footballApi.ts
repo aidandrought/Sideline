@@ -116,61 +116,79 @@ class FootballAPI {
   }
 
   async getLiveMatches(): Promise<Match[]> {
+    // Always include sample test match (Liverpool vs Arsenal)
+    const sampleMatch: Match = {
+      id: 999999,
+      home: 'Liverpool',
+      away: 'Arsenal',
+      score: '2 - 1',
+      time: '67\'',
+      league: 'Premier League',
+      status: 'live',
+      minute: '67',
+      date: new Date().toISOString(),
+      activeUsers: 15420,
+      homeLogo: undefined,
+      awayLogo: undefined,
+    };
+
     try {
       const data = await this.fetch('/fixtures?live=all');
-      
+
       if (data?.response && data.response.length > 0) {
         console.log(`Found ${data.response.length} total live matches`);
-        
+
         // STRICT filtering
         const filtered = data.response.filter((f: any) => {
           // Must be from allowed league ID
           const isAllowedLeague = this.allowedLeagueIds.includes(f.league.id);
-          
+
           // OR must involve a priority team
-          const hasPriorityTeam = this.priorityTeams.some(team => 
+          const hasPriorityTeam = this.priorityTeams.some(team =>
             f.teams.home.name.toLowerCase().includes(team.toLowerCase()) ||
             f.teams.away.name.toLowerCase().includes(team.toLowerCase())
           );
-          
+
           if (!isAllowedLeague && !hasPriorityTeam) {
             return false;
           }
-          
+
           // Block youth/reserve teams
           const leagueName = f.league.name.toLowerCase();
           const homeName = f.teams.home.name.toLowerCase();
           const awayName = f.teams.away.name.toLowerCase();
-          
+
           const hasBlockedKeyword = this.blockedKeywords.some(keyword =>
             leagueName.includes(keyword) ||
             homeName.includes(keyword) ||
             awayName.includes(keyword)
           );
-          
+
           if (hasBlockedKeyword) {
             console.log(`Blocked: ${f.league.name} - ${f.teams.home.name} vs ${f.teams.away.name}`);
             return false;
           }
-          
+
           return true;
         });
-        
+
         console.log(`Filtered to ${filtered.length} matches from top leagues`);
-        
+
         const formatted = this.formatMatches(filtered, 'live');
-        
-        // Sort by league importance
-        return this.sortByImportance(formatted).slice(0, 8);
+
+        // Add sample match at the beginning
+        const allMatches = [sampleMatch, ...formatted];
+
+        // Sort by league importance (sample match will stay at top)
+        return this.sortByImportance(allMatches).slice(0, 8);
       } else {
-        console.log('No live matches found');
-        return [];
+        console.log('No live matches found, showing sample match');
+        return [sampleMatch];
       }
     } catch (error) {
       console.error('Error fetching live matches:', error);
+      return [sampleMatch];
     }
-    
-    return [];
   }
 
   async getUpcomingMatches(date?: string): Promise<Match[]> {
