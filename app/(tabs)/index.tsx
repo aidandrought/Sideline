@@ -2,9 +2,11 @@ import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { Image, Modal, RefreshControl, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { doc, updateDoc, arrayUnion, arrayRemove } from 'firebase/firestore';
 import { useAuth } from '../../context/AuthContext';
 import { footballAPI, Match } from '../../services/footballApi';
 import { newsAPI, NewsArticle } from '../../services/newsApi';
+import { db } from '../../firebaseConfig';
 
 export default function HomeScreen() {
   const router = useRouter();
@@ -14,7 +16,8 @@ export default function HomeScreen() {
   const [news, setNews] = useState<NewsArticle[]>([]);
   const [refreshing, setRefreshing] = useState(false);
   const [loading, setLoading] = useState(true);
-  
+  const [notifiedMatches, setNotifiedMatches] = useState<Set<number>>(new Set());
+
   // Search modal state
   const [showSearchModal, setShowSearchModal] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -56,6 +59,47 @@ export default function HomeScreen() {
         params: { query: searchQuery }
       } as any);
       setSearchQuery(''); // Reset search
+    }
+  };
+
+  const toggleNotification = async (matchId: number, event?: any) => {
+    event?.stopPropagation();
+
+    if (!userProfile?.uid) return;
+
+    const isNotified = notifiedMatches.has(matchId);
+    const userDocRef = doc(db, 'users', userProfile.uid);
+
+    try {
+      if (isNotified) {
+        // Remove notification
+        setNotifiedMatches(prev => {
+          const newSet = new Set(prev);
+          newSet.delete(matchId);
+          return newSet;
+        });
+        await updateDoc(userDocRef, {
+          notifiedMatches: arrayRemove(matchId)
+        });
+      } else {
+        // Add notification
+        setNotifiedMatches(prev => new Set(prev).add(matchId));
+        await updateDoc(userDocRef, {
+          notifiedMatches: arrayUnion(matchId)
+        });
+      }
+    } catch (error) {
+      console.error('Error toggling notification:', error);
+      // Revert on error
+      if (isNotified) {
+        setNotifiedMatches(prev => new Set(prev).add(matchId));
+      } else {
+        setNotifiedMatches(prev => {
+          const newSet = new Set(prev);
+          newSet.delete(matchId);
+          return newSet;
+        });
+      }
     }
   };
 
@@ -274,10 +318,25 @@ export default function HomeScreen() {
 
                   <Text style={styles.cardLeague} numberOfLines={1}>{match.league}</Text>
 
-                  <View style={styles.notifyButton}>
-                    <Ionicons name="notifications-outline" size={14} color="#0066CC" />
-                    <Text style={styles.notifyText}>Notify me</Text>
-                  </View>
+                  <TouchableOpacity
+                    style={[
+                      styles.notifyButton,
+                      notifiedMatches.has(match.id) && styles.notifyButtonActive
+                    ]}
+                    onPress={(e) => toggleNotification(match.id, e)}
+                  >
+                    <Ionicons
+                      name={notifiedMatches.has(match.id) ? "notifications" : "notifications-outline"}
+                      size={14}
+                      color={notifiedMatches.has(match.id) ? "#FFF" : "#0066CC"}
+                    />
+                    <Text style={[
+                      styles.notifyText,
+                      notifiedMatches.has(match.id) && styles.notifyTextActive
+                    ]}>
+                      {notifiedMatches.has(match.id) ? "Notifications on" : "Notify me"}
+                    </Text>
+                  </TouchableOpacity>
                 </TouchableOpacity>
               ))}
             </ScrollView>
@@ -648,14 +707,29 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     marginTop: 12,
     paddingTop: 12,
+    paddingBottom: 4,
     borderTopWidth: 1,
     borderTopColor: '#F5F5F7',
+  },
+  notifyButtonActive: {
+    backgroundColor: '#0066CC',
+    borderTopWidth: 0,
+    marginHorizontal: -20,
+    paddingHorizontal: 20,
+    marginBottom: -20,
+    paddingTop: 16,
+    paddingBottom: 24,
+    borderBottomLeftRadius: 16,
+    borderBottomRightRadius: 16,
   },
   notifyText: {
     fontSize: 12,
     fontWeight: '600',
     color: '#0066CC',
     marginLeft: 4,
+  },
+  notifyTextActive: {
+    color: '#FFF',
   },
   emptyState: {
     paddingVertical: 60,

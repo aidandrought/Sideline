@@ -10,6 +10,7 @@ export interface NewsArticle {
   content: string;
   imageUrl?: string;
   source: string;
+  author?: string;
   publishedAt: string;
   url: string;
   category: 'soccer' | 'general';
@@ -18,11 +19,29 @@ export interface NewsArticle {
 class NewsAPI {
   private baseURL = 'https://newsapi.org/v2';
 
+  // Allowed news outlets (American, English, Spanish - what you'd see on Instagram)
+  private allowedSources = [
+    // American outlets
+    'espn', 'espn-cric-info', 'fox-sports', 'cbs-sports', 'bleacher-report',
+    'the-athletic', 'nbc-sports',
+    // English outlets
+    'bbc-sport', 'bbc-news', 'the-guardian', 'the-telegraph', 'daily-mail',
+    'mirror', 'independent', 'talksport',
+    // Spanish outlets
+    'marca', 'as', 'mundo-deportivo', 'sport'
+  ];
+
+  // Blocked sources (Indian and other outlets we don't want)
+  private blockedSourceDomains = [
+    'timesofindia.indiatimes.com', 'hindustantimes.com', 'indianexpress.com',
+    'ndtv.com', 'india.com', 'cricbuzz.com', 'sportskeeda.com'
+  ];
+
   // Keywords to EXCLUDE (American football, basketball, etc.)
   private excludedKeywords = [
     'nfl', 'nba', 'mlb', 'nhl', 'ncaa', 'super bowl', 'quarterback', 'touchdown',
     'basketball', 'baseball', 'hockey', 'american football', 'patriots', 'cowboys',
-    'lakers', 'yankees', 'bulls', 'knicks', 'patriots', 'raiders'
+    'lakers', 'yankees', 'bulls', 'knicks', 'patriots', 'raiders', 'cricket'
   ];
 
   // Soccer-specific keywords to INCLUDE
@@ -110,20 +129,47 @@ class NewsAPI {
   private filterSoccerOnly(articles: any[]): any[] {
     return articles.filter(article => {
       const text = `${article.title} ${article.description} ${article.content}`.toLowerCase();
-      
+
+      // Block Indian and other unwanted sources
+      const sourceUrl = article.url?.toLowerCase() || '';
+      const isBlockedSource = this.blockedSourceDomains.some(domain =>
+        sourceUrl.includes(domain.toLowerCase())
+      );
+
+      if (isBlockedSource) return false;
+
+      // Check if source is from allowed outlets (if source ID is available)
+      const sourceId = article.source?.id?.toLowerCase();
+      const sourceName = article.source?.name?.toLowerCase() || '';
+
+      // Filter by allowed sources if we can identify them
+      // Allow if source matches our list OR if it's from major outlets
+      const isFromAllowedSource = this.allowedSources.some(source =>
+        sourceId?.includes(source) ||
+        sourceName?.includes(source.replace(/-/g, ' '))
+      );
+
+      // Also check common outlet names
+      const isMajorOutlet = ['espn', 'bbc', 'sky sports', 'marca', 'the athletic',
+        'fox sports', 'cbs sports', 'bleacher', 'guardian', 'telegraph', 'mirror',
+        'independent', 'nbc sports', 'talksport'].some(outlet =>
+        sourceName.includes(outlet)
+      );
+
       // Exclude if contains non-soccer sports keywords
-      const hasExcluded = this.excludedKeywords.some(keyword => 
+      const hasExcluded = this.excludedKeywords.some(keyword =>
         text.includes(keyword.toLowerCase())
       );
-      
+
       if (hasExcluded) return false;
 
       // Include if contains soccer keywords
-      const hasSoccer = this.soccerKeywords.some(keyword => 
+      const hasSoccer = this.soccerKeywords.some(keyword =>
         text.includes(keyword.toLowerCase())
       );
 
-      return hasSoccer;
+      // Only include if it's soccer-related AND from an allowed/major source
+      return hasSoccer && (isFromAllowedSource || isMajorOutlet);
     });
   }
 
@@ -137,6 +183,7 @@ class NewsAPI {
         content: a.content || a.description || 'Full article content here...',
         imageUrl: a.urlToImage,
         source: a.source.name,
+        author: a.author || undefined,
         publishedAt: a.publishedAt,
         url: a.url,
         category: 'soccer'
@@ -161,6 +208,7 @@ class NewsAPI {
         content: 'Manchester City striker Erling Haaland has shattered the Premier League single-season scoring record, netting three goals in City\'s 4-1 victory over West Ham. The Norwegian international has now scored 35 goals this season, surpassing the previous record of 34. Manager Pep Guardiola praised Haaland\'s incredible consistency and predicts he will continue breaking records.',
         imageUrl: 'https://images.unsplash.com/photo-1579952363873-27f3bade9f55?w=800',
         source: 'ESPN',
+        author: 'Mark Ogden',
         publishedAt: new Date(Date.now() - 3600000).toISOString(),
         url: '#',
         category: 'soccer'
@@ -172,6 +220,7 @@ class NewsAPI {
         content: 'Real Madrid has booked their place in the Champions League semi-finals following a nerve-wracking penalty shootout against Manchester City. Vinícius Júnior scored the decisive penalty.',
         imageUrl: 'https://images.unsplash.com/photo-1574629810360-7efbbe195018?w=800',
         source: 'UEFA',
+        author: 'Rob Harris',
         publishedAt: new Date(Date.now() - 7200000).toISOString(),
         url: '#',
         category: 'soccer'
@@ -183,6 +232,7 @@ class NewsAPI {
         content: 'Kylian Mbappé has finally confirmed his long-anticipated move to Real Madrid. The 25-year-old will join the Spanish giants on a five-year deal when his Paris Saint-Germain contract expires this summer.',
         imageUrl: 'https://images.unsplash.com/photo-1560272564-c83b66b1ad12?w=800',
         source: 'Marca',
+        author: 'José Félix Díaz',
         publishedAt: new Date(Date.now() - 10800000).toISOString(),
         url: '#',
         category: 'soccer'

@@ -1,7 +1,7 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
-import { RefreshControl, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { RefreshControl, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { useAuth } from '../../context/AuthContext';
 
 interface Community {
@@ -23,48 +23,30 @@ export default function CommunitiesScreen() {
   const [myTeams, setMyTeams] = useState<Community[]>([]);
   const [trending, setTrending] = useState<Community[]>([]);
   const [allCommunities, setAllCommunities] = useState<Community[]>([]);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [filteredCommunities, setFilteredCommunities] = useState<Community[]>([]);
 
   useEffect(() => {
     loadCommunities();
   }, []);
 
+  useEffect(() => {
+    if (searchQuery.trim()) {
+      const query = searchQuery.toLowerCase();
+      const filtered = allCommunities.filter(comm =>
+        comm.name.toLowerCase().includes(query) ||
+        comm.description.toLowerCase().includes(query) ||
+        comm.league?.toLowerCase().includes(query)
+      );
+      setFilteredCommunities(filtered);
+    } else {
+      setFilteredCommunities([]);
+    }
+  }, [searchQuery, allCommunities]);
+
   const loadCommunities = async () => {
-    // Mock data - based on user's followed teams
-    const teams: Community[] = [
-      { 
-        id: '1', 
-        name: 'Real Madrid', 
-        members: '2.4M',
-        activeNow: '45.2K',
-        icon: '👑',
-        color: '#FFFFFF',
-        description: 'Official Real Madrid fan community',
-        league: 'La Liga',
-        trending: true
-      },
-      { 
-        id: '2', 
-        name: 'Liverpool FC', 
-        members: '2.1M',
-        activeNow: '38.5K',
-        icon: '🔴',
-        color: '#C8102E',
-        description: 'You\'ll Never Walk Alone',
-        league: 'Premier League',
-        trending: false
-      },
-      { 
-        id: '3', 
-        name: 'Bayern Munich', 
-        members: '1.8M',
-        activeNow: '32.1K',
-        icon: '🔴',
-        color: '#DC052D',
-        description: 'Mia San Mia - Bayern fans unite',
-        league: 'Bundesliga',
-        trending: false
-      },
-    ];
+    // New users start with empty communities
+    const teams: Community[] = [];
 
     const trendingComms: Community[] = [
       { 
@@ -100,46 +82,49 @@ export default function CommunitiesScreen() {
       },
     ];
 
+    // Comprehensive list of all team communities from top leagues
     const all: Community[] = [
-      { 
-        id: '7', 
-        name: 'La Liga United', 
-        members: '890K',
-        activeNow: '12.4K',
-        icon: '🇪🇸',
-        color: '#DC2626',
-        description: 'Spanish football passion',
-        league: 'La Liga'
-      },
-      { 
-        id: '8', 
-        name: 'Bundesliga Hub', 
-        members: '654K',
-        activeNow: '9.8K',
-        icon: '🇩🇪',
-        color: '#059669',
-        description: 'German football excellence',
-        league: 'Bundesliga'
-      },
-      { 
-        id: '9', 
-        name: 'Serie A Passione', 
-        members: '721K',
-        activeNow: '11.2K',
-        icon: '🇮🇹',
-        color: '#2563EB',
-        description: 'Italian football artistry',
-        league: 'Serie A'
-      },
-      { 
-        id: '10', 
-        name: 'Football Transfer Talk', 
-        members: '1.2M',
-        activeNow: '28.6K',
-        icon: '💰',
-        color: '#EA580C',
-        description: 'Latest transfer news & rumors',
-      },
+      // Premier League
+      { id: 'liverpool', name: 'Liverpool FC', members: '2.1M', activeNow: '38.5K', icon: '🔴', color: '#C8102E', description: 'You\'ll Never Walk Alone', league: 'Premier League' },
+      { id: 'mancity', name: 'Manchester City', members: '1.9M', activeNow: '35.2K', icon: '💙', color: '#6CABDD', description: 'Citizens Community', league: 'Premier League' },
+      { id: 'arsenal', name: 'Arsenal', members: '1.8M', activeNow: '33.1K', icon: '⚪', color: '#EF0107', description: 'Gunners United', league: 'Premier League' },
+      { id: 'chelsea', name: 'Chelsea', members: '1.7M', activeNow: '31.4K', icon: '💙', color: '#034694', description: 'Blues Family', league: 'Premier League' },
+      { id: 'manutd', name: 'Manchester United', members: '2.3M', activeNow: '41.2K', icon: '🔴', color: '#DA291C', description: 'Red Devils Forever', league: 'Premier League' },
+      { id: 'tottenham', name: 'Tottenham', members: '1.2M', activeNow: '22.1K', icon: '⚪', color: '#132257', description: 'Spurs Community', league: 'Premier League' },
+      { id: 'newcastle', name: 'Newcastle United', members: '980K', activeNow: '18.3K', icon: '⚫', color: '#241F20', description: 'Magpies Nest', league: 'Premier League' },
+      { id: 'astonvilla', name: 'Aston Villa', members: '720K', activeNow: '13.2K', icon: '🦁', color: '#95BFE5', description: 'Villans Community', league: 'Premier League' },
+
+      // La Liga
+      { id: 'realmadrid', name: 'Real Madrid', members: '2.4M', activeNow: '45.2K', icon: '👑', color: '#FFFFFF', description: 'Madridistas Worldwide', league: 'La Liga', trending: true },
+      { id: 'barcelona', name: 'FC Barcelona', members: '2.3M', activeNow: '43.8K', icon: '🔵', color: '#A50044', description: 'Més que un club', league: 'La Liga' },
+      { id: 'atletico', name: 'Atlético Madrid', members: '1.1M', activeNow: '19.4K', icon: '🔴', color: '#CB3524', description: 'Atleti Fans', league: 'La Liga' },
+      { id: 'sevilla', name: 'Sevilla FC', members: '650K', activeNow: '11.2K', icon: '⚪', color: '#F43333', description: 'Sevillistas', league: 'La Liga' },
+
+      // Serie A
+      { id: 'juventus', name: 'Juventus', members: '1.6M', activeNow: '28.7K', icon: '⚫', color: '#000000', description: 'Bianconeri Forever', league: 'Serie A' },
+      { id: 'inter', name: 'Inter Milan', members: '1.4M', activeNow: '25.3K', icon: '🖤', color: '#0068A8', description: 'Nerazzurri Pride', league: 'Serie A' },
+      { id: 'acmilan', name: 'AC Milan', members: '1.5M', activeNow: '26.8K', icon: '🔴', color: '#FB090B', description: 'Rossoneri Passion', league: 'Serie A' },
+      { id: 'napoli', name: 'Napoli', members: '890K', activeNow: '15.7K', icon: '💙', color: '#0067B9', description: 'Partenopei Community', league: 'Serie A' },
+      { id: 'roma', name: 'AS Roma', members: '950K', activeNow: '16.9K', icon: '🟡', color: '#8B0304', description: 'Giallorossi Family', league: 'Serie A' },
+
+      // Bundesliga
+      { id: 'bayern', name: 'Bayern Munich', members: '1.8M', activeNow: '32.1K', icon: '🔴', color: '#DC052D', description: 'Mia San Mia', league: 'Bundesliga' },
+      { id: 'dortmund', name: 'Borussia Dortmund', members: '1.3M', activeNow: '23.4K', icon: '🟡', color: '#FDE100', description: 'BVB Army', league: 'Bundesliga' },
+      { id: 'leipzi g', name: 'RB Leipzig', members: '580K', activeNow: '10.1K', icon: '🔴', color: '#DD0741', description: 'Red Bulls Community', league: 'Bundesliga' },
+
+      // Ligue 1
+      { id: 'psg', name: 'Paris Saint-Germain', members: '1.9M', activeNow: '34.2K', icon: '🔵', color: '#004170', description: 'Ici c\'est Paris', league: 'Ligue 1' },
+      { id: 'marseille', name: 'Olympique Marseille', members: '780K', activeNow: '13.8K', icon: '⚪', color: '#2FAEE0', description: 'OM Forever', league: 'Ligue 1' },
+
+      // MLS
+      { id: 'intermiami', name: 'Inter Miami CF', members: '1.1M', activeNow: '19.8K', icon: '🩷', color: '#F7B5CD', description: 'Miami Vibes', league: 'MLS' },
+
+      // League Communities
+      { id: 'premierleague', name: 'Premier League Fans', members: '2.8M', activeNow: '76.3K', icon: '🏴󠁧󠁢󠁥󠁮󠁧󠁿', color: '#3D195B', description: 'Best league in the world', league: 'Premier League' },
+      { id: 'laliga', name: 'La Liga United', members: '890K', activeNow: '12.4K', icon: '🇪🇸', color: '#DC2626', description: 'Spanish football passion', league: 'La Liga' },
+      { id: 'bundesliga', name: 'Bundesliga Hub', members: '654K', activeNow: '9.8K', icon: '🇩🇪', color: '#059669', description: 'German football excellence', league: 'Bundesliga' },
+      { id: 'seriea', name: 'Serie A Passione', members: '721K', activeNow: '11.2K', icon: '🇮🇹', color: '#2563EB', description: 'Italian football artistry', league: 'Serie A' },
+      { id: 'transfers', name: 'Football Transfer Talk', members: '1.2M', activeNow: '28.6K', icon: '💰', color: '#EA580C', description: 'Latest transfer news & rumors' },
     ];
 
     setMyTeams(teams);
@@ -221,15 +206,54 @@ export default function CommunitiesScreen() {
         </TouchableOpacity>
       </View>
 
-      <ScrollView 
-        style={styles.content} 
+      {/* Search Bar */}
+      <View style={styles.searchContainer}>
+        <Ionicons name="search" size={20} color="#8E8E93" style={styles.searchIcon} />
+        <TextInput
+          style={styles.searchInput}
+          placeholder="Search communities..."
+          value={searchQuery}
+          onChangeText={setSearchQuery}
+          placeholderTextColor="#8E8E93"
+        />
+        {searchQuery.length > 0 && (
+          <TouchableOpacity onPress={() => setSearchQuery('')}>
+            <Ionicons name="close-circle" size={20} color="#8E8E93" />
+          </TouchableOpacity>
+        )}
+      </View>
+
+      <ScrollView
+        style={styles.content}
         showsVerticalScrollIndicator={false}
         refreshControl={
           <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
         }
       >
-        {/* My Teams Section */}
-        <View style={styles.section}>
+        {/* Search Results */}
+        {searchQuery.trim() && (
+          <View style={styles.section}>
+            <View style={styles.sectionHeader}>
+              <Text style={styles.sectionTitle}>Search Results</Text>
+              <Text style={styles.sectionCount}>{filteredCommunities.length}</Text>
+            </View>
+            <View style={styles.communitiesGrid}>
+              {filteredCommunities.length > 0 ? (
+                filteredCommunities.map(comm => renderCommunityCard(comm))
+              ) : (
+                <View style={styles.emptySearch}>
+                  <Ionicons name="search-outline" size={48} color="#E5E7EB" />
+                  <Text style={styles.emptySearchText}>No communities found</Text>
+                  <Text style={styles.emptySearchSubtext}>Try a different search term</Text>
+                </View>
+              )}
+            </View>
+          </View>
+        )}
+
+        {/* My Teams Section - Only show if user has teams */}
+        {!searchQuery.trim() && myTeams.length > 0 && (
+          <View style={styles.section}>
           <View style={styles.sectionHeader}>
             <Text style={styles.sectionTitle}>My Teams</Text>
             <Text style={styles.sectionCount}>{myTeams.length}</Text>
@@ -289,34 +313,39 @@ export default function CommunitiesScreen() {
             </TouchableOpacity>
           </ScrollView>
         </View>
+        )}
 
-        {/* Trending Now */}
-        <View style={styles.section}>
-          <View style={styles.sectionHeader}>
-            <View style={styles.trendingHeader}>
-              <Ionicons name="flame" size={24} color="#FF3B30" />
-              <Text style={styles.sectionTitle}>Trending Now</Text>
+        {/* Trending Now - Only show when not searching */}
+        {!searchQuery.trim() && (
+          <View style={styles.section}>
+            <View style={styles.sectionHeader}>
+              <View style={styles.trendingHeader}>
+                <Ionicons name="flame" size={24} color="#FF3B30" />
+                <Text style={styles.sectionTitle}>Trending Now</Text>
+              </View>
+            </View>
+
+            <View style={styles.trendingGrid}>
+              {trending.map(comm => renderCommunityCard(comm, 'large'))}
             </View>
           </View>
+        )}
 
-          <View style={styles.trendingGrid}>
-            {trending.map(comm => renderCommunityCard(comm, 'large'))}
-          </View>
-        </View>
+        {/* Discover Communities - Only show when not searching */}
+        {!searchQuery.trim() && (
+          <View style={styles.section}>
+            <View style={styles.sectionHeader}>
+              <Text style={styles.sectionTitle}>Discover</Text>
+              <TouchableOpacity>
+                <Text style={styles.seeAllButton}>See All</Text>
+              </TouchableOpacity>
+            </View>
 
-        {/* Discover Communities */}
-        <View style={styles.section}>
-          <View style={styles.sectionHeader}>
-            <Text style={styles.sectionTitle}>Discover</Text>
-            <TouchableOpacity>
-              <Text style={styles.seeAllButton}>See All</Text>
-            </TouchableOpacity>
+            <View style={styles.communitiesGrid}>
+              {allCommunities.map(comm => renderCommunityCard(comm))}
+            </View>
           </View>
-
-          <View style={styles.communitiesGrid}>
-            {allCommunities.map(comm => renderCommunityCard(comm))}
-          </View>
-        </View>
+        )}
 
         <View style={{ height: 40 }} />
       </ScrollView>
@@ -342,6 +371,40 @@ const styles = StyleSheet.create({
     fontSize: 32,
     fontWeight: '800',
     color: '#000',
+  },
+  searchContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#F5F5F7',
+    marginHorizontal: 20,
+    marginTop: 15,
+    marginBottom: 10,
+    paddingHorizontal: 15,
+    paddingVertical: 12,
+    borderRadius: 12,
+  },
+  searchIcon: {
+    marginRight: 10,
+  },
+  searchInput: {
+    flex: 1,
+    fontSize: 16,
+    color: '#000',
+  },
+  emptySearch: {
+    paddingVertical: 60,
+    alignItems: 'center',
+  },
+  emptySearchText: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#999',
+    marginTop: 15,
+  },
+  emptySearchSubtext: {
+    fontSize: 14,
+    color: '#999',
+    marginTop: 6,
   },
   content: {
     flex: 1,

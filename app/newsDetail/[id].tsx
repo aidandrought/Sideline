@@ -116,7 +116,12 @@ export default function NewsDetailScreen() {
           )}
 
           <View style={styles.articleHeader}>
-            <Text style={styles.source}>{article.source}</Text>
+            <View>
+              <Text style={styles.source}>{article.source}</Text>
+              {article.author && (
+                <Text style={styles.author}>By {article.author}</Text>
+              )}
+            </View>
             <Text style={styles.date}>
               {new Date(article.publishedAt).toLocaleDateString()}
             </Text>
@@ -154,16 +159,6 @@ export default function NewsDetailScreen() {
                   </View>
                 </View>
                 <Text style={styles.commentText}>{comment.text}</Text>
-                <View style={styles.commentActions}>
-                  <TouchableOpacity style={styles.commentAction}>
-                    <Ionicons name="heart-outline" size={18} color="#666" />
-                    <Text style={styles.commentActionText}>{comment.likes}</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity style={styles.commentAction}>
-                    <Ionicons name="chatbubble-outline" size={18} color="#666" />
-                    <Text style={styles.commentActionText}>Reply</Text>
-                  </TouchableOpacity>
-                </View>
               </View>
             ))
           )}
@@ -238,6 +233,11 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '700',
     color: '#0066CC',
+  },
+  author: {
+    fontSize: 13,
+    color: '#666',
+    marginTop: 4,
   },
   date: {
     fontSize: 13,
