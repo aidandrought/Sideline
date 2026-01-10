@@ -1,35 +1,20 @@
+// app/newsDetail/[id].tsx
+// News article detail page - Shows source, author, full content (no reactions)
+
 import { Ionicons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { off, onValue, push, ref, set } from 'firebase/database';
 import { useEffect, useState } from 'react';
-import { KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
-import { useAuth } from '../../context/AuthContext';
-import { realtimeDb } from '../../firebaseConfig';
+import { Image, Linking, ScrollView, Share, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { newsAPI, NewsArticle } from '../../services/newsApi';
-
-interface Comment {
-  id: string;
-  userId: string;
-  username: string;
-  text: string;
-  timestamp: number;
-  likes: number;
-}
 
 export default function NewsDetailScreen() {
   const router = useRouter();
   const { id } = useLocalSearchParams();
-  const { userProfile } = useAuth();
   const [article, setArticle] = useState<NewsArticle | null>(null);
-  const [comments, setComments] = useState<Comment[]>([]);
-  const [commentText, setCommentText] = useState('');
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     loadArticle();
-    const unsubscribe = loadComments();
-    return () => {
-      if (unsubscribe) unsubscribe();
-    };
   }, [id]);
 
   const loadArticle = async () => {
@@ -39,45 +24,67 @@ export default function NewsDetailScreen() {
       if (found) setArticle(found);
     } catch (error) {
       console.error('Error loading article:', error);
+    } finally {
+      setLoading(false);
     }
   };
 
-  const loadComments = () => {
-    const commentsRef = ref(realtimeDb, `newsComments/${id}`);
-
-    onValue(commentsRef, (snapshot) => {
-      const data = snapshot.val();
-      if (data) {
-        const commentsList = Object.entries(data).map(([id, comment]: [string, any]) => ({
-          id,
-          ...comment
-        }));
-        commentsList.sort((a, b) => b.timestamp - a.timestamp);
-        setComments(commentsList);
-      } else {
-        setComments([]);
-      }
-    });
-
-    return () => off(commentsRef);
+  const handleShare = async () => {
+    if (!article) return;
+    try {
+      await Share.share({
+        title: article.title,
+        message: `${article.title}\n\nRead more: ${article.url}`,
+        url: article.url
+      });
+    } catch (error) {
+      console.error('Error sharing:', error);
+    }
   };
 
-  const postComment = async () => {
-    if (!commentText.trim() || !userProfile) return;
-
-    const commentsRef = ref(realtimeDb, `newsComments/${id}`);
-    const newCommentRef = push(commentsRef);
-
-    await set(newCommentRef, {
-      userId: userProfile.uid,
-      username: userProfile.username,
-      text: commentText,
-      timestamp: Date.now(),
-      likes: 0
-    });
-
-    setCommentText('');
+  const handleOpenSource = () => {
+    if (article?.url && article.url !== '#') {
+      Linking.openURL(article.url);
+    }
   };
+
+  const formatDate = (dateString: string) => {
+    const date = new Date(dateString);
+    const now = new Date();
+    const diffMs = now.getTime() - date.getTime();
+    const diffMins = Math.floor(diffMs / 60000);
+    const diffHours = Math.floor(diffMs / 3600000);
+    const diffDays = Math.floor(diffMs / 86400000);
+
+    if (diffMins < 60) {
+      return `${diffMins} min${diffMins !== 1 ? 's' : ''} ago`;
+    } else if (diffHours < 24) {
+      return `${diffHours} hour${diffHours !== 1 ? 's' : ''} ago`;
+    } else if (diffDays < 7) {
+      return `${diffDays} day${diffDays !== 1 ? 's' : ''} ago`;
+    } else {
+      return date.toLocaleDateString('en-US', {
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric'
+      });
+    }
+  };
+
+  if (loading) {
+    return (
+      <View style={styles.container}>
+        <View style={styles.header}>
+          <TouchableOpacity onPress={() => router.back()}>
+            <Ionicons name="chevron-back" size={28} color="#000" />
+          </TouchableOpacity>
+        </View>
+        <View style={styles.loadingContainer}>
+          <Text style={styles.loadingText}>Loading article...</Text>
+        </View>
+      </View>
+    );
+  }
 
   if (!article) {
     return (
@@ -88,7 +95,11 @@ export default function NewsDetailScreen() {
           </TouchableOpacity>
         </View>
         <View style={styles.loadingContainer}>
-          <Text style={styles.loadingText}>Loading…</Text>
+          <Ionicons name="newspaper-outline" size={64} color="#E5E7EB" />
+          <Text style={styles.errorText}>Article not found</Text>
+          <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
+            <Text style={styles.backButtonText}>Go Back</Text>
+          </TouchableOpacity>
         </View>
       </View>
     );
@@ -101,98 +112,98 @@ export default function NewsDetailScreen() {
         <TouchableOpacity onPress={() => router.back()}>
           <Ionicons name="chevron-back" size={28} color="#000" />
         </TouchableOpacity>
-        <TouchableOpacity>
-          <Ionicons name="share-outline" size={28} color="#000" />
-        </TouchableOpacity>
+        <View style={styles.headerActions}>
+          <TouchableOpacity onPress={handleShare} style={styles.headerButton}>
+            <Ionicons name="share-outline" size={24} color="#000" />
+          </TouchableOpacity>
+        </View>
       </View>
 
       <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
-        {/* Article */}
-        <View style={styles.article}>
-          {article.imageUrl && (
-            <View style={styles.articleImage}>
-              <Ionicons name="image-outline" size={64} color="#8E8E93" />
-            </View>
-          )}
+        {/* Article Image */}
+        {article.imageUrl && (
+          <View style={styles.imageContainer}>
+            <Image source={{ uri: article.imageUrl }} style={styles.articleImage} />
+          </View>
+        )}
 
-          <View style={styles.articleHeader}>
-            <Text style={styles.source}>{article.source}</Text>
-            <Text style={styles.date}>
-              {new Date(article.publishedAt).toLocaleDateString()}
-            </Text>
+        {/* Article Content */}
+        <View style={styles.articleContent}>
+          {/* Source & Date Badge */}
+          <View style={styles.metaRow}>
+            <View style={styles.sourceBadge}>
+              <Ionicons name="newspaper" size={14} color="#0066CC" />
+              <Text style={styles.sourceText}>{article.source}</Text>
+            </View>
+            <Text style={styles.dateText}>{formatDate(article.publishedAt)}</Text>
           </View>
 
+          {/* Title */}
           <Text style={styles.title}>{article.title}</Text>
-          <Text style={styles.description}>{article.description}</Text>
-          <Text style={styles.articleContent}>{article.content}</Text>
-        </View>
 
-        {/* Comments Section */}
-        <View style={styles.commentsSection}>
-          <Text style={styles.commentsTitle}>Discussion ({comments.length})</Text>
-
-          {comments.length === 0 ? (
-            <View style={styles.emptyComments}>
-              <Ionicons name="chatbubbles-outline" size={48} color="#E5E7EB" />
-              <Text style={styles.emptyCommentsText}>No comments yet</Text>
-              <Text style={styles.emptyCommentsSubtext}>Be the first to share your thoughts</Text>
-            </View>
-          ) : (
-            comments.map(comment => (
-              <View key={comment.id} style={styles.comment}>
-                <View style={styles.commentHeader}>
-                  <View style={styles.commentAvatar}>
-                    <Text style={styles.commentAvatarText}>
-                      {comment.username[0].toUpperCase()}
-                    </Text>
-                  </View>
-                  <View style={styles.commentInfo}>
-                    <Text style={styles.commentUsername}>{comment.username}</Text>
-                    <Text style={styles.commentTime}>
-                      {new Date(comment.timestamp).toLocaleTimeString()}
-                    </Text>
-                  </View>
-                </View>
-                <Text style={styles.commentText}>{comment.text}</Text>
-                <View style={styles.commentActions}>
-                  <TouchableOpacity style={styles.commentAction}>
-                    <Ionicons name="heart-outline" size={18} color="#666" />
-                    <Text style={styles.commentActionText}>{comment.likes}</Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity style={styles.commentAction}>
-                    <Ionicons name="chatbubble-outline" size={18} color="#666" />
-                    <Text style={styles.commentActionText}>Reply</Text>
-                  </TouchableOpacity>
-                </View>
+          {/* Author Info */}
+          {article.author && (
+            <View style={styles.authorSection}>
+              <View style={styles.authorAvatar}>
+                <Ionicons name="person" size={16} color="#666" />
               </View>
-            ))
+              <View style={styles.authorInfo}>
+                <Text style={styles.authorLabel}>Written by</Text>
+                <Text style={styles.authorName}>{article.author}</Text>
+              </View>
+            </View>
           )}
+
+          {/* Divider */}
+          <View style={styles.divider} />
+
+          {/* Description */}
+          {article.description && (
+            <Text style={styles.description}>{article.description}</Text>
+          )}
+
+          {/* Full Content */}
+          <Text style={styles.articleText}>
+            {article.content || article.description}
+          </Text>
+
+          {/* Source Link */}
+          <TouchableOpacity style={styles.sourceLink} onPress={handleOpenSource}>
+            <Ionicons name="open-outline" size={18} color="#0066CC" />
+            <Text style={styles.sourceLinkText}>Read full article at {article.source}</Text>
+          </TouchableOpacity>
+
+          {/* Article Info Box */}
+          <View style={styles.infoBox}>
+            <Text style={styles.infoTitle}>Article Information</Text>
+            <View style={styles.infoRow}>
+              <Text style={styles.infoLabel}>Source:</Text>
+              <Text style={styles.infoValue}>{article.source}</Text>
+            </View>
+            {article.author && (
+              <View style={styles.infoRow}>
+                <Text style={styles.infoLabel}>Author:</Text>
+                <Text style={styles.infoValue}>{article.author}</Text>
+              </View>
+            )}
+            <View style={styles.infoRow}>
+              <Text style={styles.infoLabel}>Published:</Text>
+              <Text style={styles.infoValue}>
+                {new Date(article.publishedAt).toLocaleDateString('en-US', {
+                  weekday: 'long',
+                  year: 'numeric',
+                  month: 'long',
+                  day: 'numeric',
+                  hour: '2-digit',
+                  minute: '2-digit'
+                })}
+              </Text>
+            </View>
+          </View>
         </View>
 
-        <View style={{ height: 100 }} />
+        <View style={{ height: 40 }} />
       </ScrollView>
-
-      {/* Comment Input */}
-      <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-        style={styles.commentInputContainer}
-      >
-        <TextInput
-          style={styles.commentInput}
-          placeholder="Share your thoughts..."
-          value={commentText}
-          onChangeText={setCommentText}
-          multiline
-          placeholderTextColor="#999"
-        />
-        <TouchableOpacity
-          style={[styles.sendButton, !commentText.trim() && styles.sendButtonDisabled]}
-          onPress={postComment}
-          disabled={!commentText.trim()}
-        >
-          <Ionicons name="send" size={20} color={commentText.trim() ? "#0066CC" : "#999"} />
-        </TouchableOpacity>
-      </KeyboardAvoidingView>
     </View>
   );
 }
@@ -200,7 +211,7 @@ export default function NewsDetailScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#F5F5F7',
+    backgroundColor: '#FFFFFF',
   },
   header: {
     flexDirection: 'row',
@@ -210,174 +221,174 @@ const styles = StyleSheet.create({
     paddingTop: 60,
     paddingBottom: 15,
     backgroundColor: '#FFFFFF',
+    borderBottomWidth: 1,
+    borderBottomColor: '#F0F0F0',
+  },
+  headerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 15,
+  },
+  headerButton: {
+    padding: 5,
+  },
+  loadingContainer: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 20,
+  },
+  loadingText: {
+    fontSize: 16,
+    color: '#999',
+    marginTop: 10,
+  },
+  errorText: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#666',
+    marginTop: 16,
+  },
+  backButton: {
+    marginTop: 20,
+    paddingHorizontal: 24,
+    paddingVertical: 12,
+    backgroundColor: '#0066CC',
+    borderRadius: 8,
+  },
+  backButtonText: {
+    color: '#FFF',
+    fontSize: 16,
+    fontWeight: '600',
   },
   content: {
     flex: 1,
   },
-  article: {
-    backgroundColor: '#FFFFFF',
-    padding: 20,
-    marginBottom: 15,
+  imageContainer: {
+    width: '100%',
+    height: 250,
   },
   articleImage: {
     width: '100%',
-    height: 250,
-    backgroundColor: '#F5F5F7',
-    borderRadius: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 20,
+    height: '100%',
   },
-  articleHeader: {
+  articleContent: {
+    padding: 20,
+  },
+  metaRow: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 15,
+    justifyContent: 'space-between',
+    marginBottom: 16,
   },
-  source: {
-    fontSize: 14,
+  sourceBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#E8F4FD',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 20,
+    gap: 6,
+  },
+  sourceText: {
+    fontSize: 13,
     fontWeight: '700',
     color: '#0066CC',
   },
-  date: {
+  dateText: {
     fontSize: 13,
     color: '#999',
   },
   title: {
-    fontSize: 24,
+    fontSize: 26,
     fontWeight: '800',
     color: '#000',
-    marginBottom: 15,
-    lineHeight: 32,
-  },
-  description: {
-    fontSize: 17,
-    color: '#666',
-    lineHeight: 26,
-    marginBottom: 15,
-  },
-  articleContent: {
-    fontSize: 16,
-    color: '#333',
-    lineHeight: 24,
-  },
-  commentsSection: {
-    backgroundColor: '#FFFFFF',
-    padding: 20,
-  },
-  commentsTitle: {
-    fontSize: 20,
-    fontWeight: '700',
-    color: '#000',
+    lineHeight: 34,
     marginBottom: 20,
   },
-  emptyComments: {
-    paddingVertical: 40,
+  authorSection: {
+    flexDirection: 'row',
     alignItems: 'center',
-  },
-  emptyCommentsText: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: '#999',
-    marginTop: 15,
-  },
-  emptyCommentsSubtext: {
-    fontSize: 14,
-    color: '#999',
-    marginTop: 6,
-  },
-  comment: {
     marginBottom: 20,
-    paddingBottom: 20,
-    borderBottomWidth: 1,
-    borderBottomColor: '#F5F5F7',
   },
-  commentHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 10,
-  },
-  commentAvatar: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: '#0066CC',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 10,
-  },
-  commentAvatarText: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#FFFFFF',
-  },
-  commentInfo: {},
-  commentUsername: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: '#000',
-  },
-  commentTime: {
-    fontSize: 12,
-    color: '#999',
-  },
-  commentText: {
-    fontSize: 15,
-    color: '#333',
-    lineHeight: 22,
-    marginBottom: 10,
-  },
-  commentActions: {
-    flexDirection: 'row',
-    gap: 20,
-  },
-  commentAction: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  commentActionText: {
-    fontSize: 14,
-    color: '#666',
-  },
-  commentInputContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 20,
-    paddingVertical: 15,
-    backgroundColor: '#FFFFFF',
-    borderTopWidth: 1,
-    borderTopColor: '#E5E7EB',
-  },
-  commentInput: {
-    flex: 1,
-    backgroundColor: '#F5F5F7',
-    borderRadius: 20,
-    paddingHorizontal: 15,
-    paddingVertical: 10,
-    fontSize: 16,
-    color: '#000',
-    maxHeight: 100,
-    marginRight: 10,
-  },
-  sendButton: {
+  authorAvatar: {
     width: 40,
     height: 40,
     borderRadius: 20,
     backgroundColor: '#F5F5F7',
     alignItems: 'center',
     justifyContent: 'center',
+    marginRight: 12,
   },
-  sendButtonDisabled: {
-    opacity: 0.5,
-  },
-  loadingContainer: {
+  authorInfo: {
     flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
   },
-  loadingText: {
-    fontSize: 16,
+  authorLabel: {
+    fontSize: 12,
     color: '#999',
+  },
+  authorName: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#333',
+  },
+  divider: {
+    height: 1,
+    backgroundColor: '#F0F0F0',
+    marginVertical: 20,
+  },
+  description: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#333',
+    lineHeight: 26,
+    marginBottom: 20,
+  },
+  articleText: {
+    fontSize: 17,
+    color: '#444',
+    lineHeight: 28,
+    marginBottom: 24,
+  },
+  sourceLink: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 16,
+    marginBottom: 24,
+  },
+  sourceLinkText: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#0066CC',
+  },
+  infoBox: {
+    backgroundColor: '#F8F9FA',
+    borderRadius: 12,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+  },
+  infoTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#666',
+    marginBottom: 12,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  infoRow: {
+    flexDirection: 'row',
+    marginBottom: 8,
+  },
+  infoLabel: {
+    fontSize: 14,
+    color: '#999',
+    width: 80,
+  },
+  infoValue: {
+    fontSize: 14,
+    color: '#333',
+    flex: 1,
   },
 });

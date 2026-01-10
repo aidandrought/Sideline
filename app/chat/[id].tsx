@@ -1,16 +1,22 @@
+// app/chat/[id].tsx
+// Match chat screen - Each match has its own unique chat room
+
 import { Ionicons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
 import { KeyboardAvoidingView, Modal, Platform, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { useAuth } from '../../context/AuthContext';
 import { ChatMessage, chatService } from '../../services/chatService';
-import { footballAPI, Lineup, Match, MatchEvent, Player } from '../../services/footballApi';
+import { footballAPI, Lineup, Match, MatchEvent } from '../../services/footballApi';
+import { presenceService } from '../../services/presenceService';
+import { SAMPLE_CHAT_MESSAGES, SAMPLE_LINEUPS, SAMPLE_LIVE_MATCH, SAMPLE_MATCH_EVENTS } from '../../services/testData';
 
 const AVAILABLE_EMOJIS = ['❤️', '😂', '🔥', '👍', '👎', '⚽', '😢'];
 
 export default function ChatRoom() {
   const router = useRouter();
   const { id } = useLocalSearchParams();
+  const matchId = id as string;
   const { userProfile } = useAuth();
   const scrollViewRef = useRef<ScrollView>(null);
   const lastTapTimeRef = useRef<{ [key: string]: number }>({});
@@ -24,12 +30,34 @@ export default function ChatRoom() {
   const [match, setMatch] = useState<Match | null>(null);
   const [events, setEvents] = useState<MatchEvent[]>([]);
   const [lineup, setLineup] = useState<{ home: Lineup; away: Lineup } | null>(null);
+  const [activeUsers, setActiveUsers] = useState(0);
 
   useEffect(() => {
     loadMatchData();
-    const unsubscribe = chatService.subscribeToChat(id as string, setMessages);
-    return unsubscribe;
-  }, [id]);
+    
+    // Subscribe to match-specific chat room
+    // The chat path is: chats/matches/{matchId}/messages
+    const unsubscribeChat = chatService.subscribeToChat(matchId, setMessages, 'match');
+
+    // Join presence for this specific match
+    if (userProfile) {
+      presenceService.joinChat(matchId, userProfile.uid, userProfile.username);
+      
+      // Subscribe to active users for this match
+      const unsubscribePresence = presenceService.subscribeToActiveUsers(
+        matchId,
+        (count) => setActiveUsers(count)
+      );
+
+      return () => {
+        unsubscribeChat();
+        unsubscribePresence();
+        presenceService.leaveChat(matchId, userProfile.uid);
+      };
+    }
+
+    return unsubscribeChat;
+  }, [matchId, userProfile]);
 
   useEffect(() => {
     scrollViewRef.current?.scrollToEnd({ animated: true });
@@ -37,8 +65,23 @@ export default function ChatRoom() {
 
   const loadMatchData = async () => {
     try {
+      // Check if this is the test match
+      if (matchId === SAMPLE_LIVE_MATCH.id.toString()) {
+        setMatch(SAMPLE_LIVE_MATCH);
+        setEvents(SAMPLE_MATCH_EVENTS);
+        setLineup(SAMPLE_LINEUPS);
+        
+        // Initialize with sample messages if chat is empty
+        if (messages.length === 0) {
+          setMessages(SAMPLE_CHAT_MESSAGES as ChatMessage[]);
+        }
+        return;
+      }
+
+      // Load real match data
       const liveMatches = await footballAPI.getLiveMatches();
-      const foundMatch = liveMatches.find(m => m.id.toString() === id);
+      const foundMatch = liveMatches.find(m => m.id.toString() === matchId);
+      
       if (foundMatch) {
         setMatch(foundMatch);
         const [eventsData, lineupData] = await Promise.all([
@@ -57,8 +100,9 @@ export default function ChatRoom() {
     if (!message.trim() || !userProfile) return;
 
     try {
-      const newMessage = await chatService.sendMessage(
-        id as string,
+      // Send to match-specific chat room
+      await chatService.sendMessage(
+        matchId,
         userProfile.uid,
         userProfile.username,
         message,
@@ -66,15 +110,13 @@ export default function ChatRoom() {
           messageId: replyingTo.id,
           username: replyingTo.username,
           text: replyingTo.text
-        } : undefined
+        } : undefined,
+        'match'
       );
 
-      // Update local state immediately
-      setMessages(prev => [...prev, newMessage]);
       setMessage('');
       setReplyingTo(null);
 
-      // Auto-scroll to bottom
       setTimeout(() => {
         scrollViewRef.current?.scrollToEnd({ animated: true });
       }, 100);
@@ -91,19 +133,7 @@ export default function ChatRoom() {
 
   const handleDoubleTap = async (msg: ChatMessage) => {
     if (msg.type === 'system') return;
-    await chatService.addReaction(id as string, msg.id, '❤️');
-    
-    // Update local state
-    setMessages(prev => prev.map(m => {
-      if (m.id === msg.id) {
-        const currentCount = m.reactions['❤️'] || 0;
-        return {
-          ...m,
-          reactions: { ...m.reactions, '❤️': currentCount + 1 }
-        };
-      }
-      return m;
-    }));
+    await chatService.addReaction(matchId, msg.id, '❤️', 'match');
   };
 
   const handleMessagePress = (msg: ChatMessage) => {
@@ -119,44 +149,31 @@ export default function ChatRoom() {
   const addReaction = async (emoji: string) => {
     if (!selectedMessage) return;
     
-    await chatService.addReaction(id as string, selectedMessage.id, emoji);
-    
-    // Update local state
-    setMessages(prev => prev.map(msg => {
-      if (msg.id === selectedMessage.id) {
-        const currentCount = msg.reactions[emoji] || 0;
-        return {
-          ...msg,
-          reactions: {
-            ...msg.reactions,
-            [emoji]: currentCount + 1
-          }
-        };
-      }
-      return msg;
-    }));
+    await chatService.addReaction(matchId, selectedMessage.id, emoji, 'match');
     
     setShowEmojiPicker(false);
+    setSelectedMessage(null);
   };
 
-  const renderChat = () => (
+  const renderChatTab = () => (
     <View style={styles.chatContainer}>
       <ScrollView
         ref={scrollViewRef}
         style={styles.messagesList}
+        contentContainerStyle={{ paddingBottom: 20 }}
         showsVerticalScrollIndicator={false}
       >
         {messages.map((msg) => {
-          if (msg.type === 'system') {
+          const isCurrentUser = msg.odId === userProfile?.uid;
+          const isSystem = msg.type === 'system';
+
+          if (isSystem) {
             return (
               <View key={msg.id} style={styles.systemMessage}>
-                <Ionicons name="football" size={20} color="#FFD60A" />
                 <Text style={styles.systemText}>{msg.text}</Text>
               </View>
             );
           }
-
-          const isCurrentUser = msg.userId === userProfile?.uid;
 
           return (
             <TouchableOpacity
@@ -165,8 +182,9 @@ export default function ChatRoom() {
                 styles.messageContainer,
                 isCurrentUser && styles.currentUserMessageContainer
               ]}
-              onLongPress={() => handleLongPress(msg)}
               onPress={() => handleMessagePress(msg)}
+              onLongPress={() => handleLongPress(msg)}
+              activeOpacity={0.8}
             >
               <View style={[
                 styles.messageWrapper,
@@ -178,7 +196,7 @@ export default function ChatRoom() {
 
                 {msg.replyTo && (
                   <View style={styles.replyContext}>
-                    <Text style={styles.replyContextUser}>{msg.replyTo.username}</Text>
+                    <Text style={styles.replyContextUser}>@{msg.replyTo.username}</Text>
                     <Text style={styles.replyContextText} numberOfLines={1}>
                       {msg.replyTo.text}
                     </Text>
@@ -190,26 +208,27 @@ export default function ChatRoom() {
                   isCurrentUser && styles.currentUserBubble
                 ]}>
                   <Text style={styles.messageText}>{msg.text}</Text>
-                  {msg.reactions && Object.keys(msg.reactions).length > 0 && (
-                    <View style={styles.reactions}>
-                      {Object.entries(msg.reactions).map(([emoji, count]) => (
-                        <View key={emoji} style={styles.reaction}>
-                          <Text style={styles.reactionEmoji}>{emoji}</Text>
-                          <Text style={styles.reactionCount}>{count}</Text>
-                        </View>
-                      ))}
-                    </View>
-                  )}
                 </View>
+
+                {Object.keys(msg.reactions || {}).length > 0 && (
+                  <View style={styles.reactions}>
+                    {Object.entries(msg.reactions).map(([emoji, count]) => (
+                      <View key={emoji} style={styles.reaction}>
+                        <Text style={styles.reactionEmoji}>{emoji}</Text>
+                        <Text style={styles.reactionCount}>{count}</Text>
+                      </View>
+                    ))}
+                  </View>
+                )}
 
                 <View style={[
                   styles.messageFooter,
                   isCurrentUser && styles.currentUserFooter
                 ]}>
                   <Text style={styles.timestamp}>
-                    {new Date(msg.timestamp).toLocaleTimeString('en-US', {
-                      hour: 'numeric',
-                      minute: '2-digit'
+                    {new Date(msg.timestamp).toLocaleTimeString([], { 
+                      hour: '2-digit', 
+                      minute: '2-digit' 
                     })}
                   </Text>
                   {!isCurrentUser && (
@@ -227,36 +246,167 @@ export default function ChatRoom() {
       {/* Reply Preview */}
       {replyingTo && (
         <View style={styles.replyPreview}>
-          <View style={styles.replyContent}>
-            <Text style={styles.replyLabel}>Replying to {replyingTo.username}</Text>
-            <Text style={styles.replyText} numberOfLines={1}>{replyingTo.text}</Text>
+          <View style={styles.replyPreviewContent}>
+            <Ionicons name="arrow-undo" size={16} color="#5E5CE6" />
+            <Text style={styles.replyPreviewUser}>@{replyingTo.username}</Text>
+            <Text style={styles.replyPreviewText} numberOfLines={1}>
+              {replyingTo.text}
+            </Text>
           </View>
           <TouchableOpacity onPress={() => setReplyingTo(null)}>
-            <Ionicons name="close-circle" size={24} color="#8E8E93" />
+            <Ionicons name="close" size={20} color="#8E8E93" />
           </TouchableOpacity>
         </View>
       )}
 
-      {/* Message Input */}
-      <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-        style={styles.inputContainer}
-      >
+      {/* Input Area */}
+      <View style={styles.inputContainer}>
         <TextInput
-          style={styles.input}
-          placeholder="Send a message"
-          placeholderTextColor="#666"
+          style={styles.textInput}
+          placeholder="Message..."
+          placeholderTextColor="#8E8E93"
           value={message}
           onChangeText={setMessage}
+          multiline
+          maxLength={500}
         />
-        <TouchableOpacity
-          style={[styles.sendButton, !message.trim() && styles.sendButtonDisabled]}
+        <TouchableOpacity 
+          style={styles.sendButton}
           onPress={handleSend}
           disabled={!message.trim()}
         >
-          <Text style={styles.sendButtonText}>Send</Text>
+          <Ionicons name="send" size={20} color="#FFF" />
         </TouchableOpacity>
-      </KeyboardAvoidingView>
+      </View>
+    </View>
+  );
+
+  const renderEventsTab = () => (
+    <ScrollView style={styles.eventsContainer} showsVerticalScrollIndicator={false}>
+      {events.length > 0 ? (
+        events.map((event, index) => (
+          <View key={index} style={styles.eventItem}>
+            <View style={styles.eventTime}>
+              <Text style={styles.eventTimeText}>{event.time}</Text>
+            </View>
+            <View style={styles.eventContent}>
+              <View style={styles.eventIconContainer}>
+                {event.type === 'goal' && <Text style={styles.eventIcon}>⚽</Text>}
+                {event.type === 'card' && <Text style={styles.eventIcon}>🟨</Text>}
+                {event.type === 'substitution' && <Text style={styles.eventIcon}>🔄</Text>}
+              </View>
+              <View style={styles.eventDetails}>
+                <Text style={styles.eventPlayer}>{event.player}</Text>
+                <Text style={styles.eventTeam}>{event.team}</Text>
+                {event.detail && (
+                  <Text style={styles.eventDetail}>{event.detail}</Text>
+                )}
+              </View>
+            </View>
+          </View>
+        ))
+      ) : (
+        <View style={styles.noEvents}>
+          <Ionicons name="timer-outline" size={48} color="#666" />
+          <Text style={styles.noEventsText}>No events yet</Text>
+        </View>
+      )}
+    </ScrollView>
+  );
+
+  const renderLineupTab = () => (
+    <ScrollView style={styles.lineupContainer} showsVerticalScrollIndicator={false}>
+      {lineup ? (
+        <>
+          <View style={styles.lineupSection}>
+            <Text style={styles.lineupTeam}>{lineup.home.team}</Text>
+            <Text style={styles.lineupFormation}>{lineup.home.formation}</Text>
+            {lineup.home.startXI.map((player, index) => (
+              <View key={index} style={styles.playerItem}>
+                <Text style={styles.playerNumber}>{player.number}</Text>
+                <Text style={styles.playerName}>{player.name}</Text>
+                <Text style={styles.playerPosition}>{player.position}</Text>
+              </View>
+            ))}
+          </View>
+          <View style={styles.lineupDivider} />
+          <View style={styles.lineupSection}>
+            <Text style={styles.lineupTeam}>{lineup.away.team}</Text>
+            <Text style={styles.lineupFormation}>{lineup.away.formation}</Text>
+            {lineup.away.startXI.map((player, index) => (
+              <View key={index} style={styles.playerItem}>
+                <Text style={styles.playerNumber}>{player.number}</Text>
+                <Text style={styles.playerName}>{player.name}</Text>
+                <Text style={styles.playerPosition}>{player.position}</Text>
+              </View>
+            ))}
+          </View>
+        </>
+      ) : (
+        <View style={styles.noEvents}>
+          <Ionicons name="people-outline" size={48} color="#666" />
+          <Text style={styles.noEventsText}>Lineups not available</Text>
+        </View>
+      )}
+    </ScrollView>
+  );
+
+  return (
+    <KeyboardAvoidingView 
+      style={styles.container}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+    >
+      {/* Header */}
+      <View style={styles.header}>
+        <TouchableOpacity onPress={() => router.back()}>
+          <Ionicons name="chevron-back" size={28} color="#FFF" />
+        </TouchableOpacity>
+        
+        <View style={styles.matchInfo}>
+          {match && (
+            <>
+              <View style={styles.matchScore}>
+                <Text style={styles.teamText}>{match.home}</Text>
+                <Text style={styles.scoreText}>{match.score}</Text>
+                <Text style={styles.teamText}>{match.away}</Text>
+              </View>
+              <View style={styles.matchMeta}>
+                <View style={styles.liveIndicator}>
+                  <View style={styles.liveDot} />
+                  <Text style={styles.liveText}>{match.minute}</Text>
+                </View>
+                <Text style={styles.activeUsersText}>
+                  {activeUsers > 0 ? `${activeUsers.toLocaleString()} watching` : 'Join the chat'}
+                </Text>
+              </View>
+            </>
+          )}
+        </View>
+
+        <TouchableOpacity>
+          <Ionicons name="ellipsis-vertical" size={24} color="#FFF" />
+        </TouchableOpacity>
+      </View>
+
+      {/* Tab Switcher */}
+      <View style={styles.tabContainer}>
+        {['CHAT', 'EVENTS', 'LINEUPS'].map((tab) => (
+          <TouchableOpacity
+            key={tab}
+            style={[styles.tab, activeTab === tab && styles.activeTab]}
+            onPress={() => setActiveTab(tab)}
+          >
+            <Text style={[styles.tabText, activeTab === tab && styles.activeTabText]}>
+              {tab}
+            </Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+
+      {/* Content */}
+      {activeTab === 'CHAT' && renderChatTab()}
+      {activeTab === 'EVENTS' && renderEventsTab()}
+      {activeTab === 'LINEUPS' && renderLineupTab()}
 
       {/* Emoji Picker Modal */}
       <Modal
@@ -265,224 +415,112 @@ export default function ChatRoom() {
         animationType="fade"
         onRequestClose={() => setShowEmojiPicker(false)}
       >
-        <TouchableOpacity
-          style={styles.modalOverlay}
+        <TouchableOpacity 
+          style={styles.emojiPickerOverlay}
           activeOpacity={1}
           onPress={() => setShowEmojiPicker(false)}
         >
           <View style={styles.emojiPicker}>
-            {AVAILABLE_EMOJIS.map(emoji => (
-              <TouchableOpacity
+            {AVAILABLE_EMOJIS.map((emoji) => (
+              <TouchableOpacity 
                 key={emoji}
                 style={styles.emojiButton}
                 onPress={() => addReaction(emoji)}
               >
-                <Text style={styles.emojiButtonText}>{emoji}</Text>
+                <Text style={styles.emojiText}>{emoji}</Text>
               </TouchableOpacity>
             ))}
           </View>
         </TouchableOpacity>
       </Modal>
-    </View>
-  );
-
-  const renderStats = () => (
-    <ScrollView style={styles.statsContainer} showsVerticalScrollIndicator={false}>
-      {events.length === 0 ? (
-        <View style={styles.emptyState}>
-          <Ionicons name="stats-chart-outline" size={48} color="#E5E7EB" />
-          <Text style={styles.emptyStateText}>No events yet</Text>
-        </View>
-      ) : (
-        events.map((event, index) => (
-          <View key={index} style={styles.statItem}>
-            <Ionicons
-              name={
-                event.type === 'goal' ? 'football' :
-                event.type === 'card' ? 'warning' :
-                'swap-horizontal'
-              }
-              size={24}
-              color="#FFD60A"
-            />
-            <Text style={styles.statText}>
-              {event.time}' - {event.type === 'goal' ? 'Goal' : event.type === 'card' ? event.detail : 'Substitution'} by {event.player}
-            </Text>
-          </View>
-        ))
-      )}
-    </ScrollView>
-  );
-
-  const renderLineup = () => {
-    if (!lineup || !lineup.home || !lineup.away) {
-      return (
-        <View style={styles.emptyState}>
-          <Ionicons name="people-outline" size={48} color="#E5E7EB" />
-          <Text style={styles.emptyStateText}>Lineups not available</Text>
-        </View>
-      );
-    }
-
-    const formatPlayers = (players: Player[], formation: string) => {
-      const lines = formation.split('-').map(Number);
-      const goalkeeper = players.slice(0, 1);
-      const defenders = players.slice(1, 1 + lines[0]);
-      const midfielders = players.slice(1 + lines[0], 1 + lines[0] + lines[1]);
-      const forwards = players.slice(1 + lines[0] + lines[1]);
-      return { goalkeeper, defenders, midfielders, forwards };
-    };
-
-    const renderPlayerLine = (players: Player[], title?: string) => (
-      <View style={styles.playerLine}>
-        {title && <Text style={styles.lineTitle}>{title}</Text>}
-        <View style={styles.playersRow}>
-          {players.map((player, index) => (
-            <View key={index} style={styles.player}>
-              <View style={styles.playerCircle}>
-                <Text style={styles.playerNumber}>{player.number}</Text>
-              </View>
-              <Text style={styles.playerName}>{player.name}</Text>
-            </View>
-          ))}
-        </View>
-      </View>
-    );
-
-    const renderTeamLineup = (team: Lineup) => {
-      const { goalkeeper, defenders, midfielders, forwards } = formatPlayers(
-        team.startXI,
-        team.formation
-      );
-
-      return (
-        <View style={styles.teamLineup}>
-          <Text style={styles.teamName}>{team.team} - {team.formation}</Text>
-          <View style={styles.pitch}>
-            {renderPlayerLine(forwards, 'Attack')}
-            {renderPlayerLine(midfielders, 'Midfield')}
-            {renderPlayerLine(defenders, 'Defense')}
-            {renderPlayerLine(goalkeeper, 'Goalkeeper')}
-          </View>
-
-          {team.substitutes && team.substitutes.length > 0 && (
-            <View style={styles.subsSection}>
-              <Text style={styles.subsTitle}>Substitutes</Text>
-              <View style={styles.subsList}>
-                {team.substitutes.map((player, index) => (
-                  <View key={index} style={styles.sub}>
-                    <Text style={styles.subNumber}>{player.number}</Text>
-                    <Text style={styles.subName}>{player.name}</Text>
-                  </View>
-                ))}
-              </View>
-            </View>
-          )}
-        </View>
-      );
-    };
-
-    return (
-      <ScrollView style={styles.lineupContainer} showsVerticalScrollIndicator={false}>
-        {renderTeamLineup(lineup.home)}
-        <View style={styles.lineupDivider} />
-        {renderTeamLineup(lineup.away)}
-        <View style={{ height: 40 }} />
-      </ScrollView>
-    );
-  };
-
-  return (
-    <View style={styles.container}>
-      {/* Header */}
-      <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()}>
-          <Ionicons name="chevron-back" size={28} color="#FFF" />
-        </TouchableOpacity>
-        <View style={styles.matchInfo}>
-          <Text style={styles.matchTitle}>
-            {match ? `${match.home} ${match.score} ${match.away}` : 'Loading…'}
-          </Text>
-          <Text style={styles.matchMinute}>{match?.minute || ''}</Text>
-        </View>
-        <View style={{ width: 28 }} />
-      </View>
-
-      {/* Tabs */}
-      <View style={styles.tabs}>
-        <TouchableOpacity
-          style={[styles.tab, activeTab === 'CHAT' && styles.activeTab]}
-          onPress={() => setActiveTab('CHAT')}
-        >
-          <Text style={[styles.tabText, activeTab === 'CHAT' && styles.activeTabText]}>CHAT</Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={[styles.tab, activeTab === 'STATS' && styles.activeTab]}
-          onPress={() => setActiveTab('STATS')}
-        >
-          <Text style={[styles.tabText, activeTab === 'STATS' && styles.activeTabText]}>STATS</Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={[styles.tab, activeTab === 'LINEUP' && styles.activeTab]}
-          onPress={() => setActiveTab('LINEUP')}
-        >
-          <Text style={[styles.tabText, activeTab === 'LINEUP' && styles.activeTabText]}>LINEUP</Text>
-        </TouchableOpacity>
-      </View>
-
-      {/* Content */}
-      {activeTab === 'CHAT' && renderChat()}
-      {activeTab === 'STATS' && renderStats()}
-      {activeTab === 'LINEUP' && renderLineup()}
-    </View>
+    </KeyboardAvoidingView>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0A0A0A',
+    backgroundColor: '#000',
   },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 20,
+    paddingHorizontal: 16,
     paddingTop: 60,
-    paddingBottom: 15,
+    paddingBottom: 16,
     backgroundColor: '#1C1C1E',
   },
   matchInfo: {
+    flex: 1,
     alignItems: 'center',
+    marginHorizontal: 16,
   },
-  matchTitle: {
-    fontSize: 18,
+  matchScore: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  teamText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#FFF',
+    maxWidth: 80,
+    textAlign: 'center',
+  },
+  scoreText: {
+    fontSize: 24,
+    fontWeight: '800',
+    color: '#FFF',
+  },
+  matchMeta: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 6,
+    gap: 12,
+  },
+  liveIndicator: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FF3B30',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 8,
+  },
+  liveDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: '#FFF',
+    marginRight: 4,
+  },
+  liveText: {
+    fontSize: 12,
     fontWeight: '700',
     color: '#FFF',
   },
-  matchMinute: {
-    fontSize: 14,
-    fontWeight: '500',
+  activeUsersText: {
+    fontSize: 12,
     color: '#8E8E93',
-    marginTop: 2,
   },
-  tabs: {
+  tabContainer: {
     flexDirection: 'row',
     backgroundColor: '#1C1C1E',
-    paddingHorizontal: 20,
-    paddingBottom: 15,
+    paddingHorizontal: 16,
+    paddingBottom: 12,
+    gap: 8,
   },
   tab: {
     flex: 1,
-    alignItems: 'center',
     paddingVertical: 10,
+    alignItems: 'center',
     borderRadius: 10,
   },
   activeTab: {
     backgroundColor: '#5E5CE6',
   },
   tabText: {
-    fontSize: 15,
+    fontSize: 14,
     fontWeight: '600',
     color: '#8E8E93',
   },
@@ -494,11 +532,11 @@ const styles = StyleSheet.create({
   },
   messagesList: {
     flex: 1,
-    paddingHorizontal: 20,
-    paddingTop: 20,
+    paddingHorizontal: 16,
+    paddingTop: 16,
   },
   messageContainer: {
-    marginBottom: 20,
+    marginBottom: 16,
     alignItems: 'flex-start',
   },
   currentUserMessageContainer: {
@@ -511,7 +549,7 @@ const styles = StyleSheet.create({
     alignItems: 'flex-end',
   },
   username: {
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '700',
     color: '#FFF',
     marginBottom: 4,
@@ -573,13 +611,13 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     marginTop: 4,
-    gap: 10,
+    gap: 12,
   },
   currentUserFooter: {
     justifyContent: 'flex-end',
   },
   timestamp: {
-    fontSize: 12,
+    fontSize: 11,
     color: '#8E8E93',
   },
   replyButton: {
@@ -588,75 +626,71 @@ const styles = StyleSheet.create({
     color: '#5E5CE6',
   },
   systemMessage: {
-    flexDirection: 'row',
-    alignItems: 'center',
+    alignSelf: 'center',
     backgroundColor: '#2C2C2E',
-    borderRadius: 12,
-    padding: 12,
-    marginBottom: 12,
-    gap: 10,
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 16,
+    marginVertical: 8,
   },
   systemText: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#FFD60A',
-    flex: 1,
+    fontSize: 13,
+    color: '#8E8E93',
   },
   replyPreview: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     backgroundColor: '#1C1C1E',
-    paddingHorizontal: 20,
-    paddingVertical: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
     borderTopWidth: 1,
     borderTopColor: '#2C2C2E',
   },
-  replyContent: {
+  replyPreviewContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
     flex: 1,
+    gap: 8,
   },
-  replyLabel: {
-    fontSize: 12,
+  replyPreviewUser: {
+    fontSize: 13,
     fontWeight: '600',
     color: '#5E5CE6',
-    marginBottom: 2,
   },
-  replyText: {
-    fontSize: 14,
+  replyPreviewText: {
+    fontSize: 13,
     color: '#8E8E93',
+    flex: 1,
   },
   inputContainer: {
     flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 20,
-    paddingVertical: 15,
+    alignItems: 'flex-end',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    paddingBottom: 30,
     backgroundColor: '#1C1C1E',
-    gap: 10,
+    gap: 12,
   },
-  input: {
+  textInput: {
     flex: 1,
     backgroundColor: '#2C2C2E',
     borderRadius: 20,
-    paddingHorizontal: 15,
+    paddingHorizontal: 16,
     paddingVertical: 10,
     fontSize: 16,
     color: '#FFF',
+    maxHeight: 100,
   },
   sendButton: {
-    backgroundColor: '#5E5CE6',
+    width: 40,
+    height: 40,
     borderRadius: 20,
-    paddingHorizontal: 20,
-    paddingVertical: 10,
+    backgroundColor: '#5E5CE6',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  sendButtonDisabled: {
-    opacity: 0.5,
-  },
-  sendButtonText: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#FFF',
-  },
-  modalOverlay: {
+  emojiPickerOverlay: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.5)',
     justifyContent: 'center',
@@ -664,154 +698,134 @@ const styles = StyleSheet.create({
   },
   emojiPicker: {
     flexDirection: 'row',
-    backgroundColor: '#1C1C1E',
-    borderRadius: 20,
-    padding: 15,
-    gap: 15,
-  },
-  emojiButton: {
-    width: 50,
-    height: 50,
-    justifyContent: 'center',
-    alignItems: 'center',
     backgroundColor: '#2C2C2E',
-    borderRadius: 25,
-  },
-  emojiButtonText: {
-    fontSize: 28,
-  },
-  statsContainer: {
-    flex: 1,
-    paddingHorizontal: 20,
-    paddingTop: 20,
-  },
-  statItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#1C1C1E',
-    borderRadius: 12,
-    padding: 15,
-    marginBottom: 12,
-    gap: 12,
-  },
-  statText: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#FFF',
-    flex: 1,
-  },
-  lineupContainer: {
-    flex: 1,
-    paddingTop: 20,
-  },
-  teamLineup: {
-    marginBottom: 30,
-    paddingHorizontal: 20,
-  },
-  teamName: {
-    fontSize: 20,
-    fontWeight: '700',
-    color: '#FFF',
-    marginBottom: 15,
-    textAlign: 'center',
-  },
-  pitch: {
-    backgroundColor: '#2C5E1A',
-    borderRadius: 16,
-    padding: 20,
-  },
-  lineupDivider: {
-    height: 2,
-    backgroundColor: '#2C2C2E',
-    marginVertical: 30,
-    marginHorizontal: 20,
-  },
-  playerLine: {
-    marginBottom: 20,
-  },
-  lineTitle: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: '#FFD60A',
-    textTransform: 'uppercase',
-    textAlign: 'center',
-    marginBottom: 10,
-    letterSpacing: 1,
-  },
-  playersRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-evenly',
-    flexWrap: 'wrap',
-    gap: 10,
-  },
-  player: {
-    alignItems: 'center',
-  },
-  playerCircle: {
-    width: 40,
-    height: 40,
     borderRadius: 20,
-    backgroundColor: 'rgba(255, 255, 255, 0.2)',
-    borderWidth: 2,
-    borderColor: '#FFF',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 6,
-  },
-  playerNumber: {
-    fontSize: 14,
-    fontWeight: '800',
-    color: '#FFF',
-  },
-  playerName: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#FFF',
-    textAlign: 'center',
-  },
-  subsSection: {
-    marginTop: 20,
-  },
-  subsTitle: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#FFF',
-    marginBottom: 10,
-  },
-  subsList: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
+    padding: 12,
     gap: 8,
   },
-  sub: {
+  emojiButton: {
+    padding: 8,
+  },
+  emojiText: {
+    fontSize: 24,
+  },
+  eventsContainer: {
+    flex: 1,
+    padding: 16,
+  },
+  eventItem: {
     flexDirection: 'row',
-    alignItems: 'center',
     backgroundColor: '#1C1C1E',
-    borderRadius: 16,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 12,
   },
-  subNumber: {
-    fontSize: 13,
+  eventTime: {
+    width: 50,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRightWidth: 1,
+    borderRightColor: '#2C2C2E',
+  },
+  eventTimeText: {
+    fontSize: 14,
     fontWeight: '700',
-    color: '#FFD60A',
-    marginRight: 8,
+    color: '#FFF',
   },
-  subName: {
-    fontSize: 13,
+  eventContent: {
+    flex: 1,
+    flexDirection: 'row',
+    paddingLeft: 12,
+  },
+  eventIconContainer: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#2C2C2E',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+  },
+  eventIcon: {
+    fontSize: 18,
+  },
+  eventDetails: {
+    flex: 1,
+  },
+  eventPlayer: {
+    fontSize: 15,
     fontWeight: '600',
     color: '#FFF',
   },
-  emptyState: {
+  eventTeam: {
+    fontSize: 13,
+    color: '#8E8E93',
+    marginTop: 2,
+  },
+  eventDetail: {
+    fontSize: 12,
+    color: '#666',
+    marginTop: 4,
+  },
+  noEvents: {
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
     paddingVertical: 60,
   },
-  emptyStateText: {
+  noEventsText: {
     fontSize: 16,
-    fontWeight: '600',
+    color: '#666',
+    marginTop: 12,
+  },
+  lineupContainer: {
+    flex: 1,
+    padding: 16,
+  },
+  lineupSection: {
+    marginBottom: 24,
+  },
+  lineupTeam: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#FFF',
+    marginBottom: 4,
+  },
+  lineupFormation: {
+    fontSize: 14,
     color: '#8E8E93',
-    marginTop: 15,
+    marginBottom: 16,
+  },
+  playerItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#1C1C1E',
+    borderRadius: 10,
+    padding: 12,
+    marginBottom: 8,
+  },
+  playerNumber: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#5E5CE6',
+    width: 30,
+  },
+  playerName: {
+    flex: 1,
+    fontSize: 15,
+    color: '#FFF',
+  },
+  playerPosition: {
+    fontSize: 12,
+    color: '#8E8E93',
+    backgroundColor: '#2C2C2E',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+  },
+  lineupDivider: {
+    height: 1,
+    backgroundColor: '#2C2C2E',
+    marginVertical: 16,
   },
 });

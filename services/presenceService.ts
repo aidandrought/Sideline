@@ -1,154 +1,140 @@
 // services/presenceService.ts
-// Real-time user presence tracking with Firebase
+// Tracks active users in chat rooms
 
-import { onDisconnect, onValue, ref, set } from 'firebase/database';
+import { off, onValue, ref, remove, set } from 'firebase/database';
 import { realtimeDb } from '../firebaseConfig';
 
-export interface PresenceData {
-  userId: string;
+export interface UserPresence {
+  odId: string;
   username: string;
   joinedAt: number;
   lastSeen: number;
 }
 
 class PresenceService {
-  private currentMatchId: string | null = null;
-  private currentUserId: string | null = null;
+  private heartbeatIntervals: Map<string, NodeJS.Timeout> = new Map();
+  private STALE_THRESHOLD = 2 * 60 * 1000; // 2 minutes
 
   /**
-   * Mark user as present in a chat room
+   * Join a chat room - adds user to presence list
    */
-  async joinChat(matchId: string, userId: string, username: string) {
+  async joinChat(roomId: string, userId: string, username: string): Promise<void> {
     try {
-      this.currentMatchId = matchId;
-      this.currentUserId = userId;
-
-      const userPresenceRef = ref(realtimeDb, `presence/${matchId}/${userId}`);
-      const presenceData: PresenceData = {
-        userId,
+      const presenceRef = ref(realtimeDb, `presence/${roomId}/${userId}`);
+      
+      await set(presenceRef, {
+        odId: userId,
         username,
         joinedAt: Date.now(),
         lastSeen: Date.now()
-      };
+      });
 
-      // Set user as present
-      await set(userPresenceRef, presenceData);
-
-      // Setup auto-disconnect (remove presence when user leaves/disconnects)
-      await onDisconnect(userPresenceRef).remove();
-
-      // Update heartbeat every 30 seconds
-      this.startHeartbeat(matchId, userId);
-
-      console.log(`User ${username} joined chat ${matchId}`);
+      // Start heartbeat to keep presence updated
+      this.startHeartbeat(roomId, userId);
     } catch (error) {
       console.error('Error joining chat:', error);
     }
   }
 
   /**
-   * Mark user as left the chat room
+   * Leave a chat room - removes user from presence list
    */
-  async leaveChat(matchId: string, userId: string) {
+  async leaveChat(roomId: string, userId: string): Promise<void> {
     try {
-      const userPresenceRef = ref(realtimeDb, `presence/${matchId}/${userId}`);
-      await set(userPresenceRef, null); // Remove presence
-      
-      this.stopHeartbeat();
-      
-      console.log(`User ${userId} left chat ${matchId}`);
+      // Stop heartbeat
+      this.stopHeartbeat(roomId);
+
+      const presenceRef = ref(realtimeDb, `presence/${roomId}/${userId}`);
+      await remove(presenceRef);
     } catch (error) {
       console.error('Error leaving chat:', error);
     }
   }
 
   /**
-   * Subscribe to active user count for a match
+   * Subscribe to active user count for a room
    */
-  subscribeToActiveUsers(
-    matchId: string, 
-    callback: (count: number, users: PresenceData[]) => void
-  ): () => void {
-    const presenceRef = ref(realtimeDb, `presence/${matchId}`);
-
+  subscribeToActiveUsers(roomId: string, callback: (count: number) => void): () => void {
+    const presenceRef = ref(realtimeDb, `presence/${roomId}`);
+    
     const unsubscribe = onValue(presenceRef, (snapshot) => {
       const data = snapshot.val();
-      
       if (data) {
-        const users: PresenceData[] = Object.values(data);
-        
-        // Filter out stale users (last seen > 2 minutes ago)
+        // Filter out stale users (not seen in last 2 minutes)
         const now = Date.now();
-        const activeUsers = users.filter(user => 
-          (now - user.lastSeen) < 120000 // 2 minutes
-        );
+        const activeUsers = Object.values(data as Record<string, UserPresence>)
+          .filter(user => now - user.lastSeen < this.STALE_THRESHOLD);
         
-        callback(activeUsers.length, activeUsers);
+        callback(activeUsers.length);
       } else {
-        callback(0, []);
+        callback(0);
       }
     });
 
-    return unsubscribe;
+    return () => off(presenceRef);
   }
 
   /**
-   * Get current active user count (one-time)
+   * Get list of active users in a room
    */
-  async getActiveUserCount(matchId: string): Promise<number> {
-    return new Promise((resolve) => {
-      const presenceRef = ref(realtimeDb, `presence/${matchId}`);
-      
-      onValue(presenceRef, (snapshot) => {
-        const data = snapshot.val();
-        if (data) {
-          const users: PresenceData[] = Object.values(data);
-          const now = Date.now();
-          const activeUsers = users.filter(user => 
-            (now - user.lastSeen) < 120000
-          );
-          resolve(activeUsers.length);
-        } else {
-          resolve(0);
-        }
-      }, { onlyOnce: true });
-    });
-  }
-
-  /**
-   * Heartbeat to keep presence updated
-   */
-  private heartbeatInterval: any = null;
-
-  private startHeartbeat(matchId: string, userId: string) {
-    this.stopHeartbeat();
+  subscribeToUserList(roomId: string, callback: (users: UserPresence[]) => void): () => void {
+    const presenceRef = ref(realtimeDb, `presence/${roomId}`);
     
-    this.heartbeatInterval = setInterval(async () => {
+    const unsubscribe = onValue(presenceRef, (snapshot) => {
+      const data = snapshot.val();
+      if (data) {
+        const now = Date.now();
+        const users = Object.values(data as Record<string, UserPresence>)
+          .filter(user => now - user.lastSeen < this.STALE_THRESHOLD)
+          .sort((a, b) => b.joinedAt - a.joinedAt);
+        
+        callback(users);
+      } else {
+        callback([]);
+      }
+    });
+
+    return () => off(presenceRef);
+  }
+
+  /**
+   * Start heartbeat to keep presence updated
+   */
+  private startHeartbeat(roomId: string, userId: string): void {
+    // Clear any existing heartbeat
+    this.stopHeartbeat(roomId);
+
+    const interval = setInterval(async () => {
       try {
-        const userPresenceRef = ref(realtimeDb, `presence/${matchId}/${userId}`);
-        const lastSeenRef = ref(realtimeDb, `presence/${matchId}/${userId}/lastSeen`);
-        await set(lastSeenRef, Date.now());
+        const presenceRef = ref(realtimeDb, `presence/${roomId}/${userId}/lastSeen`);
+        await set(presenceRef, Date.now());
       } catch (error) {
         console.error('Heartbeat error:', error);
       }
-    }, 30000); // Every 30 seconds
+    }, 30000); // Update every 30 seconds
+
+    this.heartbeatIntervals.set(roomId, interval);
   }
 
-  private stopHeartbeat() {
-    if (this.heartbeatInterval) {
-      clearInterval(this.heartbeatInterval);
-      this.heartbeatInterval = null;
+  /**
+   * Stop heartbeat for a room
+   */
+  private stopHeartbeat(roomId: string): void {
+    const interval = this.heartbeatIntervals.get(roomId);
+    if (interval) {
+      clearInterval(interval);
+      this.heartbeatIntervals.delete(roomId);
     }
   }
 
   /**
-   * Cleanup on app close
+   * Clean up all heartbeats (call on app close)
    */
-  async cleanup() {
-    if (this.currentMatchId && this.currentUserId) {
-      await this.leaveChat(this.currentMatchId, this.currentUserId);
-    }
-    this.stopHeartbeat();
+  cleanup(): void {
+    this.heartbeatIntervals.forEach((interval) => {
+      clearInterval(interval);
+    });
+    this.heartbeatIntervals.clear();
   }
 }
 

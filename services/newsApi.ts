@@ -1,5 +1,5 @@
 // services/newsApi.ts
-// Soccer/Football ONLY News API - Filters out all other sports
+// Soccer/Football News API - Filtered for American/English/Spanish outlets only
 
 import { API_CONFIG } from '../constants/config';
 
@@ -10,6 +10,7 @@ export interface NewsArticle {
   content: string;
   imageUrl?: string;
   source: string;
+  author?: string;
   publishedAt: string;
   url: string;
   category: 'soccer' | 'general';
@@ -18,11 +19,41 @@ export interface NewsArticle {
 class NewsAPI {
   private baseURL = 'https://newsapi.org/v2';
 
-  // Keywords to EXCLUDE (American football, basketball, etc.)
+  // ALLOWED sources - American, English, Spanish outlets only
+  private allowedSources = [
+    // American outlets
+    'espn', 'espn.com', 'espn fc', 'fox sports', 'cbs sports', 'nbc sports',
+    'the athletic', 'bleacher report', 'sports illustrated', 'yahoo sports',
+    'usa today', 'new york times', 'washington post', 'la times', 'mlssoccer.com',
+    
+    // English/UK outlets  
+    'bbc', 'bbc sport', 'bbc.com', 'sky sports', 'sky news', 'the guardian',
+    'the telegraph', 'daily mail', 'mirror', 'the sun', 'the times',
+    'the independent', 'evening standard', 'goal.com', 'football365',
+    'talksport', 'fourfourtwo', '90min', 'the athletic uk',
+    
+    // Spanish outlets
+    'marca', 'as', 'mundo deportivo', 'sport', 'el pais', 'el mundo',
+    'diario as', 'cadena ser', 'cope', 'la vanguardia'
+  ];
+
+  // BLOCKED sources - Filter out completely
+  private blockedSources = [
+    // Indian outlets
+    'times of india', 'hindustan times', 'ndtv', 'india today', 'the hindu',
+    'indian express', 'economic times', 'zee news', 'news18', 'firstpost',
+    'sportskeeda', 'khel now', 'india.com', 'dnaindia', 'deccan herald',
+    'the quint', 'scroll.in', 'livemint', 'mid-day', 'dna india',
+    
+    // Other non-target regions
+    'goal.com/en-in', 'india', '.in'
+  ];
+
+  // Keywords to EXCLUDE (American football, etc.)
   private excludedKeywords = [
     'nfl', 'nba', 'mlb', 'nhl', 'ncaa', 'super bowl', 'quarterback', 'touchdown',
     'basketball', 'baseball', 'hockey', 'american football', 'patriots', 'cowboys',
-    'lakers', 'yankees', 'bulls', 'knicks', 'patriots', 'raiders'
+    'lakers', 'yankees', 'bulls', 'knicks', 'raiders', 'ipl', 'cricket'
   ];
 
   // Soccer-specific keywords to INCLUDE
@@ -51,7 +82,7 @@ class NewsAPI {
       for (const query of queries) {
         try {
           const response = await fetch(
-            `${this.baseURL}/everything?q=${encodeURIComponent(query)}&language=en&sortBy=publishedAt&pageSize=10&apiKey=${API_CONFIG.NEWS_API_KEY}`
+            `${this.baseURL}/everything?q=${encodeURIComponent(query)}&language=en&sortBy=publishedAt&pageSize=15&apiKey=${API_CONFIG.NEWS_API_KEY}`
           );
           
           if (response.ok) {
@@ -66,8 +97,8 @@ class NewsAPI {
       }
 
       if (allArticles.length > 0) {
-        // Filter and format
-        const filtered = this.filterSoccerOnly(allArticles);
+        // Filter for soccer only AND allowed sources
+        const filtered = this.filterSoccerAndSources(allArticles);
         const formatted = this.formatArticles(filtered);
         
         // Remove duplicates by URL
@@ -93,7 +124,7 @@ class NewsAPI {
       
       if (response.ok) {
         const data = await response.json();
-        const filtered = this.filterSoccerOnly(data.articles || []);
+        const filtered = this.filterSoccerAndSources(data.articles || []);
         return this.formatArticles(filtered);
       }
     } catch (error) {
@@ -107,115 +138,147 @@ class NewsAPI {
     );
   }
 
-  private filterSoccerOnly(articles: any[]): any[] {
+  private filterSoccerAndSources(articles: any[]): any[] {
     return articles.filter(article => {
-      const text = `${article.title} ${article.description} ${article.content}`.toLowerCase();
-      
-      // Exclude if contains non-soccer sports keywords
-      const hasExcluded = this.excludedKeywords.some(keyword => 
-        text.includes(keyword.toLowerCase())
+      const title = article.title?.toLowerCase() || '';
+      const description = article.description?.toLowerCase() || '';
+      const sourceName = article.source?.name?.toLowerCase() || '';
+      const sourceId = article.source?.id?.toLowerCase() || '';
+      const url = article.url?.toLowerCase() || '';
+      const combined = `${title} ${description}`;
+
+      // Step 1: Check if source is BLOCKED
+      const isBlocked = this.blockedSources.some(blocked => 
+        sourceName.includes(blocked.toLowerCase()) || 
+        sourceId.includes(blocked.toLowerCase()) ||
+        url.includes(blocked.toLowerCase())
       );
       
-      if (hasExcluded) return false;
+      if (isBlocked) {
+        console.log(`Blocked source: ${sourceName}`);
+        return false;
+      }
 
-      // Include if contains soccer keywords
-      const hasSoccer = this.soccerKeywords.some(keyword => 
-        text.includes(keyword.toLowerCase())
+      // Step 2: Prefer allowed sources (but don't require them for quality content)
+      const isAllowedSource = this.allowedSources.some(allowed =>
+        sourceName.includes(allowed.toLowerCase()) ||
+        sourceId.includes(allowed.toLowerCase())
       );
 
-      return hasSoccer;
+      // Step 3: Exclude non-soccer sports
+      const hasExcludedKeyword = this.excludedKeywords.some(keyword =>
+        combined.includes(keyword)
+      );
+
+      if (hasExcludedKeyword) {
+        return false;
+      }
+
+      // Step 4: Must have soccer keywords
+      const hasSoccerKeyword = this.soccerKeywords.some(keyword =>
+        combined.includes(keyword)
+      );
+
+      // If from allowed source AND has soccer keywords, include it
+      // If not from allowed source, must have STRONG soccer keywords
+      if (isAllowedSource && hasSoccerKeyword) {
+        return true;
+      }
+      
+      // For non-explicitly-allowed sources, require stronger soccer relevance
+      const strongSoccerKeywords = ['premier league', 'champions league', 'la liga', 
+        'serie a', 'bundesliga', 'world cup', 'uefa', 'fifa', 'messi', 'ronaldo'];
+      const hasStrongSoccerKeyword = strongSoccerKeywords.some(keyword =>
+        combined.includes(keyword)
+      );
+
+      return hasStrongSoccerKeyword;
     });
   }
 
   private formatArticles(articles: any[]): NewsArticle[] {
-    return articles
-      .filter(a => a.title && a.title !== '[Removed]' && a.description)
-      .map(a => ({
-        id: a.url,
-        title: a.title,
-        description: a.description || 'Read more about this story...',
-        content: a.content || a.description || 'Full article content here...',
-        imageUrl: a.urlToImage,
-        source: a.source.name,
-        publishedAt: a.publishedAt,
-        url: a.url,
-        category: 'soccer'
-      }));
+    return articles.map(article => ({
+      id: article.url || `article-${Date.now()}-${Math.random()}`,
+      title: article.title || 'No title',
+      description: article.description || '',
+      content: article.content || article.description || '',
+      imageUrl: article.urlToImage,
+      source: article.source?.name || 'Unknown',
+      author: article.author || null,
+      publishedAt: article.publishedAt || new Date().toISOString(),
+      url: article.url || '#',
+      category: 'soccer'
+    }));
   }
 
   private removeDuplicates(articles: NewsArticle[]): NewsArticle[] {
-    const seen = new Set();
+    const seen = new Set<string>();
     return articles.filter(article => {
-      if (seen.has(article.url)) return false;
-      seen.add(article.url);
+      const key = article.url || article.title;
+      if (seen.has(key)) return false;
+      seen.add(key);
       return true;
     });
   }
 
-  private getMockNews(): NewsArticle[] {
+  getMockNews(): NewsArticle[] {
     return [
       {
-        id: '1',
-        title: 'Haaland Breaks Premier League Scoring Record with Hat-trick',
-        description: 'Erling Haaland has set a new Premier League record, scoring his 35th goal of the season in a dominant Manchester City performance.',
-        content: 'Manchester City striker Erling Haaland has shattered the Premier League single-season scoring record, netting three goals in City\'s 4-1 victory over West Ham. The Norwegian international has now scored 35 goals this season, surpassing the previous record of 34. Manager Pep Guardiola praised Haaland\'s incredible consistency and predicts he will continue breaking records.',
-        imageUrl: 'https://images.unsplash.com/photo-1579952363873-27f3bade9f55?w=800',
+        id: 'mock-1',
+        title: 'Premier League Title Race Heats Up After Dramatic Weekend',
+        description: 'The battle for the Premier League title intensifies as top teams trade victories in a thrilling weekend of action.',
+        content: 'The Premier League title race continues to captivate fans worldwide as the top contenders refuse to give ground. Manchester City and Arsenal remain locked in a fierce battle.',
+        imageUrl: 'https://images.unsplash.com/photo-1489944440615-453fc2b6a9a9?w=800',
         source: 'ESPN',
+        author: 'Mark Thompson',
         publishedAt: new Date(Date.now() - 3600000).toISOString(),
         url: '#',
         category: 'soccer'
       },
       {
-        id: '2',
-        title: 'Real Madrid Secures Champions League Semi-Final Spot',
-        description: 'Los Blancos advance after dramatic penalty shootout victory over Manchester City in a thrilling quarter-final clash.',
-        content: 'Real Madrid has booked their place in the Champions League semi-finals following a nerve-wracking penalty shootout against Manchester City. Vinícius Júnior scored the decisive penalty.',
-        imageUrl: 'https://images.unsplash.com/photo-1574629810360-7efbbe195018?w=800',
-        source: 'UEFA',
+        id: 'mock-2',
+        title: 'Liverpool Defeat Arsenal 2-0 in Premier League Clash',
+        description: 'Liverpool secure vital three points with commanding performance at Anfield, goals from Salah and Gakpo seal the win.',
+        content: 'Liverpool put on a dominant display against Arsenal, with Mohamed Salah and Cody Gakpo finding the net in a crucial Premier League victory.',
+        imageUrl: 'https://images.unsplash.com/photo-1522778119026-d647f0596c20?w=800',
+        source: 'Sky Sports',
+        author: 'James Williams',
         publishedAt: new Date(Date.now() - 7200000).toISOString(),
         url: '#',
         category: 'soccer'
       },
       {
-        id: '3',
-        title: 'Mbappé Confirms Summer Move to Real Madrid',
-        description: 'The French superstar will join Los Blancos on a free transfer when his PSG contract expires in June.',
-        content: 'Kylian Mbappé has finally confirmed his long-anticipated move to Real Madrid. The 25-year-old will join the Spanish giants on a five-year deal when his Paris Saint-Germain contract expires this summer.',
-        imageUrl: 'https://images.unsplash.com/photo-1560272564-c83b66b1ad12?w=800',
-        source: 'Marca',
-        publishedAt: new Date(Date.now() - 10800000).toISOString(),
-        url: '#',
-        category: 'soccer'
-      },
-      {
-        id: '4',
-        title: 'Arsenal Takes Control of Premier League Title Race',
-        description: 'The Gunners extend their lead at the top after a crucial 3-1 victory over Liverpool at the Emirates.',
-        content: 'Arsenal has taken a commanding position in the Premier League title race after defeating Liverpool 3-1 at home. Goals from Bukayo Saka, Martin Ødegaard, and Gabriel Jesus secured all three points.',
-        imageUrl: 'https://images.unsplash.com/photo-1431324155629-1a6deb1dec8d?w=800',
-        source: 'Sky Sports',
+        id: 'mock-3',
+        title: 'Champions League Draw: Barcelona to Face Bayern Munich',
+        description: 'The Champions League knockout stage draw has produced some tantalizing matchups including a clash between European giants.',
+        content: 'The Champions League draw has set up a blockbuster tie between Barcelona and Bayern Munich, reigniting memories of their historic encounters.',
+        imageUrl: 'https://images.unsplash.com/photo-1574629810360-7efbbe195018?w=800',
+        source: 'BBC Sport',
+        author: 'Sarah Johnson',
         publishedAt: new Date(Date.now() - 14400000).toISOString(),
         url: '#',
         category: 'soccer'
       },
       {
-        id: '5',
-        title: 'Barcelona Unveils Camp Nou Renovation Plans',
-        description: 'The iconic stadium to undergo €1.5 billion transformation, increasing capacity to 110,000 seats.',
-        content: 'FC Barcelona has unveiled ambitious plans to renovate Camp Nou. The €1.5 billion project will increase capacity to 110,000, making it the largest football stadium in Europe.',
-        imageUrl: 'https://images.unsplash.com/photo-1522778119026-d647f0596c20?w=800',
-        source: 'Sport',
+        id: 'mock-4',
+        title: 'Real Madrid Confirms Major Transfer Signing',
+        description: 'Real Madrid announce their latest acquisition as club continues to build for the future under Carlo Ancelotti.',
+        content: 'Real Madrid have confirmed another marquee signing, demonstrating their continued ambition in the transfer market.',
+        imageUrl: 'https://images.unsplash.com/photo-1508098682722-e99c43a406b2?w=800',
+        source: 'Marca',
+        author: 'Carlos Rodriguez',
         publishedAt: new Date(Date.now() - 18000000).toISOString(),
         url: '#',
         category: 'soccer'
       },
       {
-        id: '6',
-        title: 'Lionel Messi Wins Record 8th Ballon d\'Or',
-        description: 'The Inter Miami star adds another individual accolade after leading Argentina to World Cup glory.',
-        content: 'Lionel Messi has been awarded his eighth Ballon d\'Or, extending his record. The 36-year-old won largely due to his World Cup performances with Argentina.',
+        id: 'mock-5',
+        title: 'Messi Continues Record-Breaking Form in MLS',
+        description: 'Lionel Messi scores another hat-trick as Inter Miami extend their winning run in Major League Soccer.',
+        content: 'Lionel Messi has once again shown his class with another stellar performance for Inter Miami, cementing his status as the best player in MLS history.',
         imageUrl: 'https://images.unsplash.com/photo-1575361204480-aadea25e6e68?w=800',
-        source: 'France Football',
+        source: 'The Athletic',
+        author: 'Mike Peters',
         publishedAt: new Date(Date.now() - 21600000).toISOString(),
         url: '#',
         category: 'soccer'

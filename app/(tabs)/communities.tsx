@@ -1,150 +1,51 @@
+// app/(tabs)/communities.tsx
+// Communities page - New users start empty, can search and join communities
+
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
-import { RefreshControl, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Alert, Modal, RefreshControl, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { useAuth } from '../../context/AuthContext';
-
-interface Community {
-  id: string;
-  name: string;
-  members: string;
-  activeNow: string;
-  icon: string;
-  color: string;
-  description: string;
-  league?: string;
-  trending?: boolean;
-}
+import { Community, communityService } from '../../services/communityService';
 
 export default function CommunitiesScreen() {
   const router = useRouter();
   const { userProfile } = useAuth();
-  const [refreshing, setRefreshing] = useState(false);
-  const [myTeams, setMyTeams] = useState<Community[]>([]);
+  
+  const [myCommunities, setMyCommunities] = useState<Community[]>([]);
   const [trending, setTrending] = useState<Community[]>([]);
   const [allCommunities, setAllCommunities] = useState<Community[]>([]);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<Community[]>([]);
+  const [showSearchModal, setShowSearchModal] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     loadCommunities();
   }, []);
 
   const loadCommunities = async () => {
-    // Mock data - based on user's followed teams
-    const teams: Community[] = [
-      { 
-        id: '1', 
-        name: 'Real Madrid', 
-        members: '2.4M',
-        activeNow: '45.2K',
-        icon: '👑',
-        color: '#FFFFFF',
-        description: 'Official Real Madrid fan community',
-        league: 'La Liga',
-        trending: true
-      },
-      { 
-        id: '2', 
-        name: 'Liverpool FC', 
-        members: '2.1M',
-        activeNow: '38.5K',
-        icon: '🔴',
-        color: '#C8102E',
-        description: 'You\'ll Never Walk Alone',
-        league: 'Premier League',
-        trending: false
-      },
-      { 
-        id: '3', 
-        name: 'Bayern Munich', 
-        members: '1.8M',
-        activeNow: '32.1K',
-        icon: '🔴',
-        color: '#DC052D',
-        description: 'Mia San Mia - Bayern fans unite',
-        league: 'Bundesliga',
-        trending: false
-      },
-    ];
-
-    const trendingComms: Community[] = [
-      { 
-        id: '4', 
-        name: 'Champions League', 
-        members: '3.2M',
-        activeNow: '89.4K',
-        icon: '⭐',
-        color: '#0066CC',
-        description: 'The biggest club competition',
-        trending: true
-      },
-      { 
-        id: '5', 
-        name: 'Premier League Fans', 
-        members: '2.8M',
-        activeNow: '76.3K',
-        icon: '🏴󠁧󠁢󠁥󠁮󠁧󠁿',
-        color: '#3D195B',
-        description: 'Best league in the world',
-        league: 'Premier League',
-        trending: true
-      },
-      { 
-        id: '6', 
-        name: 'El Clásico', 
-        members: '1.9M',
-        activeNow: '52.1K',
-        icon: '⚔️',
-        color: '#FFD700',
-        description: 'The greatest rivalry',
-        trending: true
-      },
-    ];
-
-    const all: Community[] = [
-      { 
-        id: '7', 
-        name: 'La Liga United', 
-        members: '890K',
-        activeNow: '12.4K',
-        icon: '🇪🇸',
-        color: '#DC2626',
-        description: 'Spanish football passion',
-        league: 'La Liga'
-      },
-      { 
-        id: '8', 
-        name: 'Bundesliga Hub', 
-        members: '654K',
-        activeNow: '9.8K',
-        icon: '🇩🇪',
-        color: '#059669',
-        description: 'German football excellence',
-        league: 'Bundesliga'
-      },
-      { 
-        id: '9', 
-        name: 'Serie A Passione', 
-        members: '721K',
-        activeNow: '11.2K',
-        icon: '🇮🇹',
-        color: '#2563EB',
-        description: 'Italian football artistry',
-        league: 'Serie A'
-      },
-      { 
-        id: '10', 
-        name: 'Football Transfer Talk', 
-        members: '1.2M',
-        activeNow: '28.6K',
-        icon: '💰',
-        color: '#EA580C',
-        description: 'Latest transfer news & rumors',
-      },
-    ];
-
-    setMyTeams(teams);
-    setTrending(trendingComms);
-    setAllCommunities(all);
+    try {
+      setLoading(true);
+      
+      // Load user's joined communities (empty for new users)
+      if (userProfile) {
+        const joined = await communityService.getUserCommunities(userProfile.uid);
+        setMyCommunities(joined);
+      }
+      
+      // Load trending and all communities
+      const trendingComms = await communityService.getTrendingCommunities();
+      const allComms = await communityService.getAllCommunities();
+      
+      setTrending(trendingComms);
+      setAllCommunities(allComms);
+    } catch (error) {
+      console.error('Error loading communities:', error);
+    } finally {
+      setLoading(false);
+    }
   };
 
   const onRefresh = async () => {
@@ -153,30 +54,85 @@ export default function CommunitiesScreen() {
     setRefreshing(false);
   };
 
-  const renderCommunityCard = (community: Community, size: 'large' | 'medium' = 'medium') => {
-    const isLarge = size === 'large';
+  const handleSearch = async (query: string) => {
+    setSearchQuery(query);
+    if (query.length > 1) {
+      const results = await communityService.searchCommunities(query);
+      setSearchResults(results);
+    } else {
+      setSearchResults([]);
+    }
+  };
+
+  const handleJoinCommunity = async (community: Community) => {
+    if (!userProfile) {
+      Alert.alert('Sign in required', 'Please sign in to join communities');
+      return;
+    }
+
+    const success = await communityService.joinCommunity(userProfile.uid, community.id);
+    if (success) {
+      // Update local state
+      setMyCommunities(prev => [...prev, community]);
+      Alert.alert('Joined!', `You're now a member of ${community.name}`);
+    } else {
+      Alert.alert('Error', 'Failed to join community. Please try again.');
+    }
+  };
+
+  const handleLeaveCommunity = async (community: Community) => {
+    if (!userProfile) return;
+
+    Alert.alert(
+      'Leave Community',
+      `Are you sure you want to leave ${community.name}?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Leave',
+          style: 'destructive',
+          onPress: async () => {
+            const success = await communityService.leaveCommunity(userProfile.uid, community.id);
+            if (success) {
+              setMyCommunities(prev => prev.filter(c => c.id !== community.id));
+            }
+          }
+        }
+      ]
+    );
+  };
+
+  const navigateToCommunityChat = (community: Community) => {
+    // Navigate to the community chat with proper type
+    router.push({
+      pathname: '/communityChat/[id]',
+      params: { 
+        id: community.id,
+        name: community.name,
+        type: community.type
+      }
+    } as any);
+  };
+
+  const isJoined = (communityId: string): boolean => {
+    return myCommunities.some(c => c.id === communityId);
+  };
+
+  const renderCommunityCard = (community: Community, showJoinButton: boolean = true) => {
+    const joined = isJoined(community.id);
     
     return (
       <TouchableOpacity
         key={community.id}
-        style={[
-          styles.communityCard,
-          isLarge && styles.communityCardLarge
-        ]}
-        onPress={() => {
-          // Navigate to community chat
-          router.push(`/chat/${community.id}` as any);
-        }}
+        style={styles.communityCard}
+        onPress={() => joined ? navigateToCommunityChat(community) : handleJoinCommunity(community)}
+        onLongPress={() => joined ? handleLeaveCommunity(community) : null}
       >
-        <View style={[
-          styles.communityHeader,
-          { backgroundColor: community.color === '#FFFFFF' ? '#F5F5F7' : community.color }
-        ]}>
+        <View style={[styles.communityHeader, { backgroundColor: community.color }]}>
           <Text style={styles.communityIcon}>{community.icon}</Text>
           {community.trending && (
             <View style={styles.trendingBadge}>
               <Ionicons name="trending-up" size={12} color="#FFF" />
-              <Text style={styles.trendingText}>Trending</Text>
             </View>
           )}
         </View>
@@ -186,9 +142,16 @@ export default function CommunitiesScreen() {
             {community.name}
           </Text>
           
-          {community.league && (
-            <View style={styles.leagueBadge}>
-              <Text style={styles.leagueText}>{community.league}</Text>
+          {community.type && (
+            <View style={[
+              styles.typeBadge,
+              community.type === 'team' && styles.teamBadge,
+              community.type === 'league' && styles.leagueBadge,
+            ]}>
+              <Text style={styles.typeText}>
+                {community.type === 'team' ? '⚽ Team' : 
+                 community.type === 'league' ? '🏆 League' : '👥 Community'}
+              </Text>
             </View>
           )}
 
@@ -201,11 +164,36 @@ export default function CommunitiesScreen() {
               <Ionicons name="people" size={14} color="#666" />
               <Text style={styles.statText}>{community.members}</Text>
             </View>
-            <View style={styles.stat}>
-              <View style={styles.activeDot} />
-              <Text style={styles.activeText}>{community.activeNow} active</Text>
-            </View>
+            {community.activeNow && (
+              <View style={styles.stat}>
+                <View style={styles.activeDot} />
+                <Text style={styles.activeText}>{community.activeNow} active</Text>
+              </View>
+            )}
           </View>
+
+          {showJoinButton && (
+            <TouchableOpacity
+              style={[styles.joinButton, joined && styles.joinedButton]}
+              onPress={(e) => {
+                e.stopPropagation();
+                if (joined) {
+                  navigateToCommunityChat(community);
+                } else {
+                  handleJoinCommunity(community);
+                }
+              }}
+            >
+              <Ionicons 
+                name={joined ? 'chatbubbles' : 'add'} 
+                size={16} 
+                color={joined ? '#FFF' : '#0066CC'} 
+              />
+              <Text style={[styles.joinButtonText, joined && styles.joinedButtonText]}>
+                {joined ? 'Open Chat' : 'Join'}
+              </Text>
+            </TouchableOpacity>
+          )}
         </View>
       </TouchableOpacity>
     );
@@ -216,10 +204,19 @@ export default function CommunitiesScreen() {
       {/* Header */}
       <View style={styles.header}>
         <Text style={styles.title}>Communities</Text>
-        <TouchableOpacity>
-          <Ionicons name="add-circle" size={28} color="#0066CC" />
+        <TouchableOpacity onPress={() => setShowSearchModal(true)}>
+          <Ionicons name="search" size={24} color="#0066CC" />
         </TouchableOpacity>
       </View>
+
+      {/* Search Bar */}
+      <TouchableOpacity 
+        style={styles.searchBar}
+        onPress={() => setShowSearchModal(true)}
+      >
+        <Ionicons name="search" size={20} color="#8E8E93" />
+        <Text style={styles.searchPlaceholder}>Search communities...</Text>
+      </TouchableOpacity>
 
       <ScrollView 
         style={styles.content} 
@@ -228,98 +225,147 @@ export default function CommunitiesScreen() {
           <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
         }
       >
-        {/* My Teams Section */}
+        {/* My Communities Section */}
         <View style={styles.section}>
           <View style={styles.sectionHeader}>
-            <Text style={styles.sectionTitle}>My Teams</Text>
-            <Text style={styles.sectionCount}>{myTeams.length}</Text>
+            <Text style={styles.sectionTitle}>My Communities</Text>
+            <Text style={styles.sectionCount}>{myCommunities.length}</Text>
           </View>
 
-          <ScrollView 
-            horizontal 
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={styles.horizontalScrollContent}
-          >
-            {myTeams.map(team => (
-              <TouchableOpacity
-                key={team.id}
-                style={[
-                  styles.myTeamCard,
-                  { backgroundColor: team.color === '#FFFFFF' ? '#F5F5F7' : team.color }
-                ]}
-                onPress={() => router.push(`/chat/${team.id}` as any)}
-              >
-                <View style={styles.myTeamHeader}>
-                  <Text style={styles.myTeamIcon}>{team.icon}</Text>
-                  <View style={styles.liveIndicator}>
-                    <View style={styles.liveDot} />
-                    <Text style={styles.liveCount}>{team.activeNow}</Text>
-                  </View>
-                </View>
-                <Text 
-                  style={[
-                    styles.myTeamName,
-                    { color: team.color === '#FFFFFF' ? '#000' : '#FFF' }
-                  ]} 
-                  numberOfLines={2}
+          {myCommunities.length > 0 ? (
+            <ScrollView 
+              horizontal 
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.horizontalScrollContent}
+            >
+              {myCommunities.map(community => (
+                <TouchableOpacity
+                  key={community.id}
+                  style={styles.myTeamCard}
+                  onPress={() => navigateToCommunityChat(community)}
                 >
-                  {team.name}
-                </Text>
-                <View style={styles.myTeamFooter}>
-                  <Ionicons 
-                    name="chatbubbles" 
-                    size={14} 
-                    color={team.color === '#FFFFFF' ? '#666' : 'rgba(255,255,255,0.8)'} 
-                  />
-                  <Text 
-                    style={[
-                      styles.myTeamMembers,
-                      { color: team.color === '#FFFFFF' ? '#666' : 'rgba(255,255,255,0.8)' }
-                    ]}
-                  >
-                    {team.members}
-                  </Text>
-                </View>
-              </TouchableOpacity>
-            ))}
-            
-            <TouchableOpacity style={styles.addTeamCard}>
-              <Ionicons name="add-circle" size={48} color="#0066CC" />
-              <Text style={styles.addTeamText}>Follow Team</Text>
-            </TouchableOpacity>
-          </ScrollView>
-        </View>
-
-        {/* Trending Now */}
-        <View style={styles.section}>
-          <View style={styles.sectionHeader}>
-            <View style={styles.trendingHeader}>
-              <Ionicons name="flame" size={24} color="#FF3B30" />
-              <Text style={styles.sectionTitle}>Trending Now</Text>
+                  <View style={[styles.myTeamIcon, { backgroundColor: community.color }]}>
+                    <Text style={styles.myTeamEmoji}>{community.icon}</Text>
+                  </View>
+                  <Text style={styles.myTeamName} numberOfLines={1}>{community.name}</Text>
+                  {community.hasLiveMatch && (
+                    <View style={styles.liveBadge}>
+                      <View style={styles.liveDot} />
+                      <Text style={styles.liveText}>LIVE</Text>
+                    </View>
+                  )}
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          ) : (
+            <View style={styles.emptyMyCommunities}>
+              <Ionicons name="people-outline" size={48} color="#E5E7EB" />
+              <Text style={styles.emptyTitle}>No communities yet</Text>
+              <Text style={styles.emptySubtitle}>
+                Join communities below to connect with fellow fans
+              </Text>
             </View>
-          </View>
-
-          <View style={styles.trendingGrid}>
-            {trending.map(comm => renderCommunityCard(comm, 'large'))}
-          </View>
+          )}
         </View>
 
-        {/* Discover Communities */}
+        {/* Trending Communities */}
         <View style={styles.section}>
           <View style={styles.sectionHeader}>
-            <Text style={styles.sectionTitle}>Discover</Text>
-            <TouchableOpacity>
-              <Text style={styles.seeAllButton}>See All</Text>
-            </TouchableOpacity>
+            <Text style={styles.sectionTitle}>🔥 Trending</Text>
           </View>
 
-          <View style={styles.communitiesGrid}>
-            {allCommunities.map(comm => renderCommunityCard(comm))}
+          {trending.map(community => renderCommunityCard(community))}
+        </View>
+
+        {/* Team Communities */}
+        <View style={styles.section}>
+          <View style={styles.sectionHeader}>
+            <Text style={styles.sectionTitle}>⚽ Team Communities</Text>
           </View>
+
+          {allCommunities
+            .filter(c => c.type === 'team')
+            .slice(0, 6)
+            .map(community => renderCommunityCard(community))}
+        </View>
+
+        {/* League Communities */}
+        <View style={styles.section}>
+          <View style={styles.sectionHeader}>
+            <Text style={styles.sectionTitle}>🏆 League Communities</Text>
+          </View>
+
+          {allCommunities
+            .filter(c => c.type === 'league')
+            .slice(0, 4)
+            .map(community => renderCommunityCard(community))}
         </View>
 
         <View style={{ height: 40 }} />
       </ScrollView>
+
+      {/* Search Modal */}
+      <Modal
+        visible={showSearchModal}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={() => setShowSearchModal(false)}
+      >
+        <View style={styles.modalContainer}>
+          <View style={styles.modalHeader}>
+            <TouchableOpacity onPress={() => setShowSearchModal(false)}>
+              <Text style={styles.cancelButton}>Cancel</Text>
+            </TouchableOpacity>
+            <Text style={styles.modalTitle}>Search Communities</Text>
+            <View style={{ width: 60 }} />
+          </View>
+
+          <View style={styles.modalSearchBar}>
+            <Ionicons name="search" size={20} color="#8E8E93" />
+            <TextInput
+              style={styles.searchInput}
+              placeholder="Search for teams, leagues..."
+              value={searchQuery}
+              onChangeText={handleSearch}
+              autoFocus
+              placeholderTextColor="#8E8E93"
+            />
+            {searchQuery.length > 0 && (
+              <TouchableOpacity onPress={() => handleSearch('')}>
+                <Ionicons name="close-circle" size={20} color="#8E8E93" />
+              </TouchableOpacity>
+            )}
+          </View>
+
+          <ScrollView style={styles.searchResults}>
+            {searchQuery.length > 0 ? (
+              searchResults.length > 0 ? (
+                searchResults.map(community => renderCommunityCard(community))
+              ) : (
+                <View style={styles.noResults}>
+                  <Ionicons name="search-outline" size={48} color="#E5E7EB" />
+                  <Text style={styles.noResultsText}>No communities found</Text>
+                  <Text style={styles.noResultsSubtext}>Try a different search term</Text>
+                </View>
+              )
+            ) : (
+              <View style={styles.searchSuggestions}>
+                <Text style={styles.suggestionsTitle}>Popular Searches</Text>
+                {['Liverpool', 'Real Madrid', 'Premier League', 'Champions League', 'Barcelona'].map(term => (
+                  <TouchableOpacity 
+                    key={term}
+                    style={styles.suggestionItem}
+                    onPress={() => handleSearch(term)}
+                  >
+                    <Ionicons name="search" size={16} color="#666" />
+                    <Text style={styles.suggestionText}>{term}</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            )}
+          </ScrollView>
+        </View>
+      </Modal>
     </View>
   );
 }
@@ -339,188 +385,180 @@ const styles = StyleSheet.create({
     backgroundColor: '#FFFFFF',
   },
   title: {
-    fontSize: 32,
+    fontSize: 28,
     fontWeight: '800',
     color: '#000',
+  },
+  searchBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FFFFFF',
+    marginHorizontal: 20,
+    marginTop: 10,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderRadius: 12,
+    gap: 10,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 4,
+  },
+  searchPlaceholder: {
+    fontSize: 16,
+    color: '#8E8E93',
   },
   content: {
     flex: 1,
+    marginTop: 10,
   },
   section: {
-    marginTop: 25,
+    marginBottom: 24,
   },
   sectionHeader: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
     paddingHorizontal: 20,
-    marginBottom: 15,
+    marginBottom: 12,
   },
   sectionTitle: {
-    fontSize: 22,
-    fontWeight: '800',
+    fontSize: 18,
+    fontWeight: '700',
     color: '#000',
   },
   sectionCount: {
-    fontSize: 16,
+    fontSize: 14,
     fontWeight: '600',
     color: '#666',
-    backgroundColor: '#F5F5F7',
-    paddingHorizontal: 12,
-    paddingVertical: 4,
-    borderRadius: 12,
-  },
-  trendingHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  seeAllButton: {
-    fontSize: 15,
-    fontWeight: '600',
-    color: '#0066CC',
+    marginLeft: 8,
+    backgroundColor: '#E5E7EB',
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 10,
   },
   horizontalScrollContent: {
     paddingHorizontal: 20,
+    gap: 12,
   },
   myTeamCard: {
-    width: 160,
-    height: 180,
-    borderRadius: 20,
-    padding: 16,
-    marginRight: 12,
-    justifyContent: 'space-between',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.15,
-    shadowRadius: 12,
-    elevation: 5,
-  },
-  myTeamHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
+    alignItems: 'center',
+    width: 80,
   },
   myTeamIcon: {
-    fontSize: 40,
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 8,
   },
-  liveIndicator: {
+  myTeamEmoji: {
+    fontSize: 28,
+  },
+  myTeamName: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#333',
+    textAlign: 'center',
+  },
+  liveBadge: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'rgba(255,255,255,0.25)',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 12,
+    backgroundColor: '#FF3B30',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 8,
+    marginTop: 4,
   },
   liveDot: {
     width: 6,
     height: 6,
     borderRadius: 3,
-    backgroundColor: '#34C759',
+    backgroundColor: '#FFF',
     marginRight: 4,
   },
-  liveCount: {
-    fontSize: 11,
+  liveText: {
+    fontSize: 10,
     fontWeight: '700',
     color: '#FFF',
   },
-  myTeamName: {
-    fontSize: 18,
-    fontWeight: '800',
-    lineHeight: 22,
-  },
-  myTeamFooter: {
-    flexDirection: 'row',
+  emptyMyCommunities: {
     alignItems: 'center',
-    gap: 6,
-  },
-  myTeamMembers: {
-    fontSize: 13,
-    fontWeight: '600',
-  },
-  addTeamCard: {
-    width: 160,
-    height: 180,
-    borderRadius: 20,
+    paddingVertical: 32,
+    paddingHorizontal: 20,
+    marginHorizontal: 20,
     backgroundColor: '#FFFFFF',
-    borderWidth: 2,
-    borderColor: '#0066CC',
-    borderStyle: 'dashed',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 12,
+    borderRadius: 16,
   },
-  addTeamText: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: '#0066CC',
-    marginTop: 8,
+  emptyTitle: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#333',
+    marginTop: 12,
   },
-  trendingGrid: {
-    paddingHorizontal: 20,
-    gap: 12,
-  },
-  communitiesGrid: {
-    paddingHorizontal: 20,
-    gap: 12,
+  emptySubtitle: {
+    fontSize: 14,
+    color: '#666',
+    textAlign: 'center',
+    marginTop: 4,
   },
   communityCard: {
     backgroundColor: '#FFFFFF',
+    marginHorizontal: 20,
+    marginBottom: 12,
     borderRadius: 16,
     overflow: 'hidden',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.08,
     shadowRadius: 8,
-    elevation: 3,
-  },
-  communityCardLarge: {
-    marginBottom: 8,
   },
   communityHeader: {
-    height: 80,
-    padding: 16,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
+    height: 60,
+    alignItems: 'center',
+    justifyContent: 'center',
+    position: 'relative',
   },
   communityIcon: {
-    fontSize: 36,
+    fontSize: 28,
   },
   trendingBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#FF3B30',
+    position: 'absolute',
+    top: 8,
+    right: 8,
+    backgroundColor: 'rgba(0,0,0,0.3)',
     paddingHorizontal: 8,
     paddingVertical: 4,
-    borderRadius: 12,
-    gap: 4,
-  },
-  trendingText: {
-    fontSize: 11,
-    fontWeight: '700',
-    color: '#FFF',
+    borderRadius: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
   },
   communityBody: {
     padding: 16,
   },
   communityName: {
-    fontSize: 20,
-    fontWeight: '800',
+    fontSize: 17,
+    fontWeight: '700',
     color: '#000',
     marginBottom: 6,
   },
-  leagueBadge: {
+  typeBadge: {
     alignSelf: 'flex-start',
-    backgroundColor: '#F5F5F7',
-    paddingHorizontal: 10,
+    backgroundColor: '#F0F0F0',
+    paddingHorizontal: 8,
     paddingVertical: 4,
-    borderRadius: 8,
+    borderRadius: 6,
     marginBottom: 8,
   },
-  leagueText: {
+  teamBadge: {
+    backgroundColor: '#E8F5E9',
+  },
+  leagueBadge: {
+    backgroundColor: '#FFF3E0',
+  },
+  typeText: {
     fontSize: 11,
-    fontWeight: '700',
+    fontWeight: '600',
     color: '#666',
   },
   communityDescription: {
@@ -531,20 +569,19 @@ const styles = StyleSheet.create({
   },
   communityStats: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
-    paddingTop: 12,
-    borderTopWidth: 1,
-    borderTopColor: '#F5F5F7',
+    alignItems: 'center',
+    gap: 16,
+    marginBottom: 12,
   },
   stat: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
+    gap: 4,
   },
   statText: {
     fontSize: 13,
-    fontWeight: '600',
     color: '#666',
+    fontWeight: '500',
   },
   activeDot: {
     width: 6,
@@ -554,7 +591,105 @@ const styles = StyleSheet.create({
   },
   activeText: {
     fontSize: 13,
-    fontWeight: '600',
     color: '#34C759',
+    fontWeight: '500',
+  },
+  joinButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#E8F4FD',
+    paddingVertical: 10,
+    borderRadius: 10,
+    gap: 6,
+  },
+  joinedButton: {
+    backgroundColor: '#0066CC',
+  },
+  joinButtonText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#0066CC',
+  },
+  joinedButtonText: {
+    color: '#FFF',
+  },
+  modalContainer: {
+    flex: 1,
+    backgroundColor: '#F5F5F7',
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 20,
+    paddingTop: 20,
+    paddingBottom: 15,
+    backgroundColor: '#FFFFFF',
+  },
+  cancelButton: {
+    fontSize: 16,
+    color: '#0066CC',
+  },
+  modalTitle: {
+    fontSize: 17,
+    fontWeight: '600',
+    color: '#000',
+  },
+  modalSearchBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FFFFFF',
+    marginHorizontal: 20,
+    marginTop: 10,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderRadius: 12,
+    gap: 10,
+  },
+  searchInput: {
+    flex: 1,
+    fontSize: 16,
+    color: '#000',
+  },
+  searchResults: {
+    flex: 1,
+    marginTop: 20,
+  },
+  noResults: {
+    alignItems: 'center',
+    paddingVertical: 60,
+  },
+  noResultsText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#666',
+    marginTop: 12,
+  },
+  noResultsSubtext: {
+    fontSize: 14,
+    color: '#999',
+    marginTop: 4,
+  },
+  searchSuggestions: {
+    paddingHorizontal: 20,
+  },
+  suggestionsTitle: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#666',
+    marginBottom: 12,
+  },
+  suggestionItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    paddingVertical: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F0F0F0',
+  },
+  suggestionText: {
+    fontSize: 16,
+    color: '#333',
   },
 });
