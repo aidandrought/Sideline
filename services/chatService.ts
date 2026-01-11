@@ -1,13 +1,14 @@
 // services/chatService.ts
-// Real-time chat service using Firebase Realtime Database
-// Each game and community has its own unique chat room
+// Firebase Realtime Database chat service
+// Each matchId gets its OWN isolated chat room
 
-import { off, onValue, push, ref, set, update } from 'firebase/database';
+import { off, onValue, push, ref, set } from 'firebase/database';
 import { realtimeDb } from '../firebaseConfig';
 
 export interface ChatMessage {
   id: string;
-  odId: string;
+  matchId: string;
+  userId: string;
   username: string;
   text: string;
   timestamp: number;
@@ -17,113 +18,108 @@ export interface ChatMessage {
     username: string;
     text: string;
   };
-  type?: 'user' | 'system';
-}
-
-export type ChatRoomType = 'match' | 'community' | 'team' | 'league';
-
-export interface ChatRoom {
-  id: string;
-  type: ChatRoomType;
-  name: string;
-  description?: string;
-  createdAt: number;
-  messageCount: number;
-  lastActivity: number;
+  type: 'user' | 'system';
 }
 
 class ChatService {
+  private activeSubscriptions: Map<string, () => void> = new Map();
+
   /**
-   * Get the Firebase path for a chat room
-   * Ensures unique paths for different types of chats
+   * Subscribe to chat messages for a specific match
+   * Each matchId gets its own isolated chat room
    */
-  private getChatPath(roomId: string, roomType: ChatRoomType = 'match'): string {
-    switch (roomType) {
-      case 'match':
-        // Format: chats/matches/{matchId}/messages
-        return `chats/matches/${roomId}/messages`;
-      case 'community':
-        // Format: chats/communities/{communityId}/messages
-        return `chats/communities/${roomId}/messages`;
-      case 'team':
-        // Format: chats/teams/{teamId}/messages
-        return `chats/teams/${roomId}/messages`;
-      case 'league':
-        // Format: chats/leagues/{leagueId}/messages
-        return `chats/leagues/${roomId}/messages`;
-      default:
-        return `chats/general/${roomId}/messages`;
+  subscribeToChat(matchId: string, callback: (messages: ChatMessage[]) => void): () => void {
+    // Unsubscribe from previous subscription if exists
+    this.unsubscribeFromChat(matchId);
+
+    const chatRef = ref(realtimeDb, `chats/${matchId}`);
+    const messages: ChatMessage[] = [];
+
+    // Listen for all messages in this chat room
+    const unsubscribe = onValue(chatRef, (snapshot) => {
+      const data = snapshot.val();
+      if (data) {
+        const messageList = Object.entries(data).map(([id, msg]: [string, any]) => ({
+          id,
+          matchId,
+          ...msg
+        }));
+        // Sort by timestamp
+        messageList.sort((a, b) => a.timestamp - b.timestamp);
+        callback(messageList);
+      } else {
+        // Initialize with welcome message if empty
+        this.initializeChatRoom(matchId).then(() => {
+          callback([]);
+        });
+      }
+    });
+
+    // Store unsubscribe function
+    this.activeSubscriptions.set(matchId, () => {
+      off(chatRef);
+    });
+
+    return () => this.unsubscribeFromChat(matchId);
+  }
+
+  /**
+   * Unsubscribe from a chat room
+   */
+  private unsubscribeFromChat(matchId: string) {
+    const unsubscribe = this.activeSubscriptions.get(matchId);
+    if (unsubscribe) {
+      unsubscribe();
+      this.activeSubscriptions.delete(matchId);
     }
   }
 
   /**
-   * Subscribe to chat messages for a specific room
+   * Initialize a chat room with a welcome message
    */
-  subscribeToChat(
-    roomId: string, 
-    callback: (messages: ChatMessage[]) => void,
-    roomType: ChatRoomType = 'match'
-  ): () => void {
-    const chatPath = this.getChatPath(roomId, roomType);
-    const messagesRef = ref(realtimeDb, chatPath);
-
-    const unsubscribe = onValue(messagesRef, (snapshot) => {
-      const data = snapshot.val();
-      if (data) {
-        const messages: ChatMessage[] = Object.entries(data)
-          .map(([id, msg]: [string, any]) => ({
-            id,
-            odId: msg.userId,
-            username: msg.username,
-            text: msg.text,
-            timestamp: msg.timestamp,
-            reactions: msg.reactions || {},
-            replyTo: msg.replyTo,
-            type: msg.type || 'user'
-          }))
-          .sort((a, b) => a.timestamp - b.timestamp);
-        
-        callback(messages);
-      } else {
-        callback([]);
-      }
+  async initializeChatRoom(matchId: string): Promise<void> {
+    const chatRef = ref(realtimeDb, `chats/${matchId}`);
+    const newMessageRef = push(chatRef);
+    
+    await set(newMessageRef, {
+      matchId,
+      userId: 'system',
+      username: 'Sideline',
+      text: '⚽ Welcome to the match chat! Be respectful and enjoy the game!',
+      timestamp: Date.now(),
+      reactions: {},
+      type: 'system'
     });
-
-    return () => off(messagesRef);
   }
 
   /**
-   * Send a message to a chat room
+   * Send a message to a specific match chat
    */
   async sendMessage(
-    roomId: string,
+    matchId: string,
     userId: string,
     username: string,
     text: string,
-    replyTo?: ChatMessage['replyTo'],
-    roomType: ChatRoomType = 'match'
+    replyTo?: ChatMessage['replyTo']
   ): Promise<ChatMessage> {
-    const chatPath = this.getChatPath(roomId, roomType);
-    const messagesRef = ref(realtimeDb, chatPath);
-    const newMessageRef = push(messagesRef);
-
-    const messageData = {
-      odId: userId,
+    const chatRef = ref(realtimeDb, `chats/${matchId}`);
+    const newMessageRef = push(chatRef);
+    
+    const messageData: Omit<ChatMessage, 'id'> = {
+      matchId,
+      userId,
       username,
       text,
       timestamp: Date.now(),
       reactions: {},
-      replyTo: replyTo,
-      type: 'user' as const
+      type: 'user',
+      ...(replyTo && { replyTo })
     };
 
     await set(newMessageRef, messageData);
 
-    // Update room metadata
-    await this.updateRoomMetadata(roomId, roomType);
-
     return {
-      id: newMessageRef.key || Date.now().toString(),
+      id: newMessageRef.key!,
       ...messageData
     };
   }
@@ -131,138 +127,49 @@ class ChatService {
   /**
    * Add a reaction to a message
    */
-  async addReaction(
-    roomId: string, 
-    messageId: string, 
-    emoji: string,
-    roomType: ChatRoomType = 'match'
-  ): Promise<void> {
-    const chatPath = this.getChatPath(roomId, roomType);
-    const reactionRef = ref(realtimeDb, `${chatPath}/${messageId}/reactions/${emoji}`);
+  async addReaction(matchId: string, messageId: string, emoji: string): Promise<void> {
+    const reactionRef = ref(realtimeDb, `chats/${matchId}/${messageId}/reactions/${emoji}`);
     
     // Get current count and increment
-    return new Promise((resolve, reject) => {
-      onValue(reactionRef, async (snapshot) => {
-        const currentCount = snapshot.val() || 0;
-        try {
-          await set(reactionRef, currentCount + 1);
-          off(reactionRef);
-          resolve();
-        } catch (error) {
-          reject(error);
-        }
-      }, { onlyOnce: true });
-    });
+    onValue(reactionRef, async (snapshot) => {
+      const currentCount = snapshot.val() || 0;
+      await set(reactionRef, currentCount + 1);
+    }, { onlyOnce: true });
   }
 
   /**
-   * Send a system message (goals, cards, etc.)
+   * Send a system message (for goals, cards, etc.)
    */
-  async sendSystemMessage(
-    roomId: string, 
-    text: string, 
-    icon: string,
-    roomType: ChatRoomType = 'match'
-  ): Promise<ChatMessage> {
-    const chatPath = this.getChatPath(roomId, roomType);
-    const messagesRef = ref(realtimeDb, chatPath);
-    const newMessageRef = push(messagesRef);
-
-    const messageData = {
-      odId: 'system',
-      username: 'System',
-      text: `${icon} ${text}`,
+  async sendSystemMessage(matchId: string, text: string): Promise<ChatMessage> {
+    const chatRef = ref(realtimeDb, `chats/${matchId}`);
+    const newMessageRef = push(chatRef);
+    
+    const messageData: Omit<ChatMessage, 'id'> = {
+      matchId,
+      userId: 'system',
+      username: 'Sideline',
+      text,
       timestamp: Date.now(),
       reactions: {},
-      type: 'system' as const
+      type: 'system'
     };
 
     await set(newMessageRef, messageData);
 
     return {
-      id: newMessageRef.key || Date.now().toString(),
+      id: newMessageRef.key!,
       ...messageData
     };
   }
 
   /**
-   * Update room metadata (last activity, message count)
+   * Clean up all subscriptions
    */
-  private async updateRoomMetadata(roomId: string, roomType: ChatRoomType): Promise<void> {
-    try {
-      const roomPath = roomType === 'match' 
-        ? `chats/matches/${roomId}/metadata`
-        : `chats/${roomType}s/${roomId}/metadata`;
-      
-      const metadataRef = ref(realtimeDb, roomPath);
-      await update(metadataRef, {
-        lastActivity: Date.now()
-      });
-    } catch (error) {
-      console.error('Error updating room metadata:', error);
-    }
-  }
-
-  /**
-   * Initialize a chat room (if it doesn't exist)
-   */
-  async initializeChatRoom(
-    roomId: string, 
-    roomType: ChatRoomType, 
-    name: string,
-    description?: string
-  ): Promise<void> {
-    try {
-      const roomPath = roomType === 'match' 
-        ? `chats/matches/${roomId}/metadata`
-        : `chats/${roomType}s/${roomId}/metadata`;
-      
-      const metadataRef = ref(realtimeDb, roomPath);
-      await set(metadataRef, {
-        id: roomId,
-        type: roomType,
-        name,
-        description: description || '',
-        createdAt: Date.now(),
-        lastActivity: Date.now()
-      });
-    } catch (error) {
-      console.error('Error initializing chat room:', error);
-    }
-  }
-
-  /**
-   * Get chat room info
-   */
-  async getChatRoomInfo(roomId: string, roomType: ChatRoomType): Promise<ChatRoom | null> {
-    return new Promise((resolve) => {
-      const roomPath = roomType === 'match' 
-        ? `chats/matches/${roomId}/metadata`
-        : `chats/${roomType}s/${roomId}/metadata`;
-      
-      const metadataRef = ref(realtimeDb, roomPath);
-      onValue(metadataRef, (snapshot) => {
-        const data = snapshot.val();
-        off(metadataRef);
-        resolve(data || null);
-      }, { onlyOnce: true });
+  cleanup(): void {
+    this.activeSubscriptions.forEach((unsubscribe, matchId) => {
+      unsubscribe();
     });
-  }
-
-  /**
-   * Get message count for a room
-   */
-  async getMessageCount(roomId: string, roomType: ChatRoomType = 'match'): Promise<number> {
-    return new Promise((resolve) => {
-      const chatPath = this.getChatPath(roomId, roomType);
-      const messagesRef = ref(realtimeDb, chatPath);
-      
-      onValue(messagesRef, (snapshot) => {
-        const data = snapshot.val();
-        off(messagesRef);
-        resolve(data ? Object.keys(data).length : 0);
-      }, { onlyOnce: true });
-    });
+    this.activeSubscriptions.clear();
   }
 }
 

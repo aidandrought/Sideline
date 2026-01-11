@@ -1,11 +1,24 @@
 // app/newsDetail/[id].tsx
-// News article detail page - Shows source, author, full content (no reactions)
+// News Article Detail - PL App Style
+// Features: Purple title, tag pills, full-width image, author/date, highlighted team names, NO comments
 
 import { Ionicons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
-import { Image, Linking, ScrollView, Share, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Image, ScrollView, Share, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { newsAPI, NewsArticle } from '../../services/newsApi';
+
+// Teams to highlight in purple (clickable style)
+const HIGHLIGHT_TEAMS = [
+  'Liverpool', 'Arsenal', 'Chelsea', 'Manchester City', 'Man City',
+  'Manchester United', 'Man United', 'Tottenham', 'Newcastle', 'West Ham',
+  'Aston Villa', 'Brighton', 'Fulham', 'Brentford', 'Crystal Palace',
+  'Everton', 'Wolves', 'Wolverhampton Wanderers', 'Bournemouth', 'Nottingham Forest',
+  'Real Madrid', 'Barcelona', 'Atletico Madrid', 'Bayern Munich', 'Dortmund',
+  'Borussia Dortmund', 'PSG', 'Paris Saint-Germain', 'Juventus', 'Inter Milan',
+  'AC Milan', 'Roma', 'Napoli', 'Lazio', 'Inter', 'Milan',
+  'Macclesfield', 'Morecambe', 'Hull City',
+];
 
 export default function NewsDetailScreen() {
   const router = useRouter();
@@ -19,9 +32,9 @@ export default function NewsDetailScreen() {
 
   const loadArticle = async () => {
     try {
-      const news = await newsAPI.getSoccerNews();
-      const found = news.find(n => n.id === decodeURIComponent(id as string));
-      if (found) setArticle(found);
+      const articleId = Array.isArray(id) ? id[0] : id;
+      const found = await newsAPI.getArticleById(decodeURIComponent(articleId));
+      setArticle(found);
     } catch (error) {
       console.error('Error loading article:', error);
     } finally {
@@ -31,56 +44,115 @@ export default function NewsDetailScreen() {
 
   const handleShare = async () => {
     if (!article) return;
+    
     try {
       await Share.share({
+        message: `${article.title}\n\nRead more on Sideline`,
         title: article.title,
-        message: `${article.title}\n\nRead more: ${article.url}`,
-        url: article.url
       });
     } catch (error) {
       console.error('Error sharing:', error);
     }
   };
 
-  const handleOpenSource = () => {
-    if (article?.url && article.url !== '#') {
-      Linking.openURL(article.url);
-    }
-  };
-
   const formatDate = (dateString: string) => {
     const date = new Date(dateString);
-    const now = new Date();
-    const diffMs = now.getTime() - date.getTime();
-    const diffMins = Math.floor(diffMs / 60000);
-    const diffHours = Math.floor(diffMs / 3600000);
-    const diffDays = Math.floor(diffMs / 86400000);
+    return date.toLocaleDateString('en-GB', {
+      day: 'numeric',
+      month: 'short',
+      year: 'numeric',
+    });
+  };
 
-    if (diffMins < 60) {
-      return `${diffMins} min${diffMins !== 1 ? 's' : ''} ago`;
-    } else if (diffHours < 24) {
-      return `${diffHours} hour${diffHours !== 1 ? 's' : ''} ago`;
-    } else if (diffDays < 7) {
-      return `${diffDays} day${diffDays !== 1 ? 's' : ''} ago`;
-    } else {
-      return date.toLocaleDateString('en-US', {
-        month: 'short',
-        day: 'numeric',
-        year: 'numeric'
-      });
-    }
+  // Render content with highlighted team names
+  const renderHighlightedContent = (text: string) => {
+    if (!text) return null;
+
+    // Split text into paragraphs
+    const paragraphs = text.split('\n\n').filter(p => p.trim());
+
+    return paragraphs.map((paragraph, pIndex) => {
+      // Find all team mentions and their positions
+      let segments: { text: string; isTeam: boolean }[] = [];
+      let remainingText = paragraph;
+      let lastIndex = 0;
+
+      // Sort teams by length (longest first) to avoid partial matches
+      const sortedTeams = [...HIGHLIGHT_TEAMS].sort((a, b) => b.length - a.length);
+
+      // Create a regex pattern for all teams
+      const teamPattern = new RegExp(
+        `\\b(${sortedTeams.map(t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})\\b`,
+        'gi'
+      );
+
+      let match;
+      let currentIndex = 0;
+      const matches: { start: number; end: number; team: string }[] = [];
+
+      while ((match = teamPattern.exec(paragraph)) !== null) {
+        matches.push({
+          start: match.index,
+          end: match.index + match[0].length,
+          team: match[0],
+        });
+      }
+
+      // Build segments
+      if (matches.length === 0) {
+        segments = [{ text: paragraph, isTeam: false }];
+      } else {
+        matches.forEach((m, i) => {
+          // Add text before this match
+          if (m.start > currentIndex) {
+            segments.push({
+              text: paragraph.slice(currentIndex, m.start),
+              isTeam: false,
+            });
+          }
+          // Add the team name
+          segments.push({
+            text: m.team,
+            isTeam: true,
+          });
+          currentIndex = m.end;
+        });
+        // Add remaining text
+        if (currentIndex < paragraph.length) {
+          segments.push({
+            text: paragraph.slice(currentIndex),
+            isTeam: false,
+          });
+        }
+      }
+
+      return (
+        <Text key={pIndex} style={styles.paragraph}>
+          {segments.map((segment, sIndex) => (
+            <Text
+              key={sIndex}
+              style={segment.isTeam ? styles.highlightedTeam : undefined}
+            >
+              {segment.text}
+            </Text>
+          ))}
+        </Text>
+      );
+    });
   };
 
   if (loading) {
     return (
       <View style={styles.container}>
         <View style={styles.header}>
-          <TouchableOpacity onPress={() => router.back()}>
-            <Ionicons name="chevron-back" size={28} color="#000" />
+          <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
+            <Ionicons name="chevron-back" size={24} color="#37003C" />
           </TouchableOpacity>
+          <Text style={styles.headerTitle}>News</Text>
+          <View style={styles.headerRight} />
         </View>
         <View style={styles.loadingContainer}>
-          <Text style={styles.loadingText}>Loading article...</Text>
+          <ActivityIndicator size="large" color="#37003C" />
         </View>
       </View>
     );
@@ -90,116 +162,101 @@ export default function NewsDetailScreen() {
     return (
       <View style={styles.container}>
         <View style={styles.header}>
-          <TouchableOpacity onPress={() => router.back()}>
-            <Ionicons name="chevron-back" size={28} color="#000" />
+          <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
+            <Ionicons name="chevron-back" size={24} color="#37003C" />
           </TouchableOpacity>
+          <Text style={styles.headerTitle}>News</Text>
+          <View style={styles.headerRight} />
         </View>
-        <View style={styles.loadingContainer}>
+        <View style={styles.errorContainer}>
           <Ionicons name="newspaper-outline" size={64} color="#E5E7EB" />
           <Text style={styles.errorText}>Article not found</Text>
-          <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
-            <Text style={styles.backButtonText}>Go Back</Text>
+          <TouchableOpacity style={styles.retryButton} onPress={() => router.back()}>
+            <Text style={styles.retryButtonText}>Go Back</Text>
           </TouchableOpacity>
         </View>
       </View>
     );
   }
 
+  // Get display tags (max 3 + overflow count)
+  const displayTags = article.tags?.slice(0, 3) || ['news'];
+  const overflowCount = (article.tags?.length || 1) - 3;
+
   return (
     <View style={styles.container}>
-      {/* Header */}
+      {/* Header - PL Style */}
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()}>
-          <Ionicons name="chevron-back" size={28} color="#000" />
+        <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
+          <Ionicons name="chevron-back" size={24} color="#37003C" />
         </TouchableOpacity>
-        <View style={styles.headerActions}>
-          <TouchableOpacity onPress={handleShare} style={styles.headerButton}>
-            <Ionicons name="share-outline" size={24} color="#000" />
-          </TouchableOpacity>
-        </View>
+        <Text style={styles.headerTitle}>News</Text>
+        <TouchableOpacity style={styles.shareButton} onPress={handleShare}>
+          <Text style={styles.shareText}>Share</Text>
+          <Ionicons name="paper-plane-outline" size={18} color="#37003C" />
+        </TouchableOpacity>
       </View>
 
-      <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
-        {/* Article Image */}
+      <ScrollView 
+        style={styles.content} 
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={styles.contentContainer}
+      >
+        {/* Title - Large Purple */}
+        <Text style={styles.title}>{article.title}</Text>
+
+        {/* Tags Row */}
+        <View style={styles.tagsRow}>
+          {displayTags.map((tag, index) => (
+            <View key={index} style={styles.tag}>
+              <Text style={styles.tagText}>{tag}</Text>
+            </View>
+          ))}
+          {overflowCount > 0 && (
+            <View style={styles.tagOverflow}>
+              <Text style={styles.tagOverflowText}>+{overflowCount}</Text>
+            </View>
+          )}
+        </View>
+
+        {/* Full-width Image */}
         {article.imageUrl && (
           <View style={styles.imageContainer}>
-            <Image source={{ uri: article.imageUrl }} style={styles.articleImage} />
+            <Image
+              source={{ uri: article.imageUrl }}
+              style={styles.image}
+              resizeMode="cover"
+            />
           </View>
         )}
 
-        {/* Article Content */}
-        <View style={styles.articleContent}>
-          {/* Source & Date Badge */}
-          <View style={styles.metaRow}>
-            <View style={styles.sourceBadge}>
-              <Ionicons name="newspaper" size={14} color="#0066CC" />
-              <Text style={styles.sourceText}>{article.source}</Text>
-            </View>
-            <Text style={styles.dateText}>{formatDate(article.publishedAt)}</Text>
-          </View>
+        {/* Author · Date */}
+        <Text style={styles.authorDate}>
+          {article.author || 'Staff Writer'} · {formatDate(article.publishedAt)}
+        </Text>
 
-          {/* Title */}
-          <Text style={styles.title}>{article.title}</Text>
+        {/* Description (Italic intro) */}
+        <Text style={styles.description}>{article.description}</Text>
 
-          {/* Author Info */}
-          {article.author && (
-            <View style={styles.authorSection}>
-              <View style={styles.authorAvatar}>
-                <Ionicons name="person" size={16} color="#666" />
-              </View>
-              <View style={styles.authorInfo}>
-                <Text style={styles.authorLabel}>Written by</Text>
-                <Text style={styles.authorName}>{article.author}</Text>
-              </View>
-            </View>
-          )}
+        {/* Article Content with highlighted teams */}
+        <View style={styles.articleBody}>
+          {renderHighlightedContent(article.content)}
+        </View>
 
-          {/* Divider */}
-          <View style={styles.divider} />
-
-          {/* Description */}
-          {article.description && (
-            <Text style={styles.description}>{article.description}</Text>
-          )}
-
-          {/* Full Content */}
-          <Text style={styles.articleText}>
-            {article.content || article.description}
-          </Text>
-
-          {/* Source Link */}
-          <TouchableOpacity style={styles.sourceLink} onPress={handleOpenSource}>
-            <Ionicons name="open-outline" size={18} color="#0066CC" />
-            <Text style={styles.sourceLinkText}>Read full article at {article.source}</Text>
+        {/* Read More Link */}
+        {article.url && article.url !== '#' && (
+          <TouchableOpacity style={styles.readMoreButton}>
+            <Text style={styles.readMoreText}>
+              Read full article on {article.source}
+            </Text>
+            <Ionicons name="open-outline" size={16} color="#37003C" />
           </TouchableOpacity>
+        )}
 
-          {/* Article Info Box */}
-          <View style={styles.infoBox}>
-            <Text style={styles.infoTitle}>Article Information</Text>
-            <View style={styles.infoRow}>
-              <Text style={styles.infoLabel}>Source:</Text>
-              <Text style={styles.infoValue}>{article.source}</Text>
-            </View>
-            {article.author && (
-              <View style={styles.infoRow}>
-                <Text style={styles.infoLabel}>Author:</Text>
-                <Text style={styles.infoValue}>{article.author}</Text>
-              </View>
-            )}
-            <View style={styles.infoRow}>
-              <Text style={styles.infoLabel}>Published:</Text>
-              <Text style={styles.infoValue}>
-                {new Date(article.publishedAt).toLocaleDateString('en-US', {
-                  weekday: 'long',
-                  year: 'numeric',
-                  month: 'long',
-                  day: 'numeric',
-                  hour: '2-digit',
-                  minute: '2-digit'
-                })}
-              </Text>
-            </View>
-          </View>
+        {/* Source Attribution */}
+        <View style={styles.sourceAttribution}>
+          <Text style={styles.sourceLabel}>Source</Text>
+          <Text style={styles.sourceName}>{article.source}</Text>
         </View>
 
         <View style={{ height: 40 }} />
@@ -217,31 +274,56 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 20,
+    paddingHorizontal: 16,
     paddingTop: 60,
-    paddingBottom: 15,
+    paddingBottom: 16,
     backgroundColor: '#FFFFFF',
     borderBottomWidth: 1,
     borderBottomColor: '#F0F0F0',
   },
-  headerActions: {
+  backButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#F5F5F7',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  headerTitle: {
+    fontSize: 17,
+    fontWeight: '600',
+    color: '#000',
+  },
+  headerRight: {
+    width: 40,
+  },
+  shareButton: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 15,
+    gap: 4,
   },
-  headerButton: {
-    padding: 5,
+  shareText: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#37003C',
+  },
+  content: {
+    flex: 1,
+  },
+  contentContainer: {
+    paddingHorizontal: 20,
+    paddingTop: 24,
   },
   loadingContainer: {
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    padding: 20,
   },
-  loadingText: {
-    fontSize: 16,
-    color: '#999',
-    marginTop: 10,
+  errorContainer: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 40,
   },
   errorText: {
     fontSize: 18,
@@ -249,146 +331,140 @@ const styles = StyleSheet.create({
     color: '#666',
     marginTop: 16,
   },
-  backButton: {
+  retryButton: {
     marginTop: 20,
     paddingHorizontal: 24,
     paddingVertical: 12,
-    backgroundColor: '#0066CC',
+    backgroundColor: '#37003C',
     borderRadius: 8,
   },
-  backButtonText: {
-    color: '#FFF',
-    fontSize: 16,
+  retryButtonText: {
+    fontSize: 15,
     fontWeight: '600',
+    color: '#FFF',
   },
-  content: {
-    flex: 1,
+
+  // Title - Large Purple (PL Style)
+  title: {
+    fontSize: 28,
+    fontWeight: '800',
+    color: '#37003C',
+    lineHeight: 34,
+    marginBottom: 16,
   },
+
+  // Tags Row
+  tagsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginBottom: 20,
+  },
+  tag: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    backgroundColor: '#F5F5F7',
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+  },
+  tagText: {
+    fontSize: 13,
+    fontWeight: '500',
+    color: '#333',
+  },
+  tagOverflow: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    backgroundColor: '#F5F5F7',
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+  },
+  tagOverflowText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#666',
+  },
+
+  // Image
   imageContainer: {
     width: '100%',
-    height: 250,
+    height: 220,
+    borderRadius: 12,
+    overflow: 'hidden',
+    marginBottom: 16,
+    backgroundColor: '#F5F5F7',
   },
-  articleImage: {
+  image: {
     width: '100%',
     height: '100%',
   },
-  articleContent: {
-    padding: 20,
-  },
-  metaRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 16,
-  },
-  sourceBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#E8F4FD',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 20,
-    gap: 6,
-  },
-  sourceText: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#0066CC',
-  },
-  dateText: {
-    fontSize: 13,
-    color: '#999',
-  },
-  title: {
-    fontSize: 26,
-    fontWeight: '800',
-    color: '#000',
-    lineHeight: 34,
+
+  // Author & Date
+  authorDate: {
+    fontSize: 14,
+    color: '#666',
     marginBottom: 20,
   },
-  authorSection: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 20,
-  },
-  authorAvatar: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: '#F5F5F7',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 12,
-  },
-  authorInfo: {
-    flex: 1,
-  },
-  authorLabel: {
-    fontSize: 12,
-    color: '#999',
-  },
-  authorName: {
-    fontSize: 15,
-    fontWeight: '600',
-    color: '#333',
-  },
-  divider: {
-    height: 1,
-    backgroundColor: '#F0F0F0',
-    marginVertical: 20,
-  },
+
+  // Description (Italic intro paragraph)
   description: {
     fontSize: 18,
-    fontWeight: '600',
+    fontStyle: 'italic',
+    fontWeight: '500',
+    color: '#37003C',
+    lineHeight: 26,
+    marginBottom: 24,
+  },
+
+  // Article Body
+  articleBody: {
+    marginBottom: 24,
+  },
+  paragraph: {
+    fontSize: 16,
     color: '#333',
     lineHeight: 26,
     marginBottom: 20,
   },
-  articleText: {
-    fontSize: 17,
-    color: '#444',
-    lineHeight: 28,
-    marginBottom: 24,
+  highlightedTeam: {
+    color: '#37003C',
+    fontWeight: '600',
   },
-  sourceLink: {
+
+  // Read More Button
+  readMoreButton: {
     flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'center',
     gap: 8,
-    paddingVertical: 16,
+    paddingVertical: 14,
+    borderWidth: 1,
+    borderColor: '#37003C',
+    borderRadius: 8,
     marginBottom: 24,
   },
-  sourceLinkText: {
-    fontSize: 15,
+  readMoreText: {
+    fontSize: 14,
     fontWeight: '600',
-    color: '#0066CC',
+    color: '#37003C',
   },
-  infoBox: {
-    backgroundColor: '#F8F9FA',
-    borderRadius: 12,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: '#E5E7EB',
+
+  // Source Attribution
+  sourceAttribution: {
+    paddingTop: 16,
+    borderTopWidth: 1,
+    borderTopColor: '#F0F0F0',
   },
-  infoTitle: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#666',
-    marginBottom: 12,
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-  },
-  infoRow: {
-    flexDirection: 'row',
-    marginBottom: 8,
-  },
-  infoLabel: {
-    fontSize: 14,
+  sourceLabel: {
+    fontSize: 12,
     color: '#999',
-    width: 80,
+    marginBottom: 4,
   },
-  infoValue: {
+  sourceName: {
     fontSize: 14,
-    color: '#333',
-    flex: 1,
+    fontWeight: '600',
+    color: '#37003C',
   },
 });

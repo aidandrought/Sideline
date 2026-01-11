@@ -6,11 +6,13 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useRef, useState } from 'react';
 import { KeyboardAvoidingView, Platform, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { useAuth } from '../../context/AuthContext';
-import { ChatMessage, ChatRoomType, chatService } from '../../services/chatService';
+import { ChatMessage, chatService } from '../../services/chatService';
 import { Community, communityService } from '../../services/communityService';
 import { presenceService } from '../../services/presenceService';
 
 const AVAILABLE_EMOJIS = ['❤️', '😂', '🔥', '👍', '⚽', '🎉', '💪'];
+
+type ChatRoomType = 'team' | 'league' | 'community';
 
 export default function CommunityChatScreen() {
   const router = useRouter();
@@ -30,13 +32,9 @@ export default function CommunityChatScreen() {
     loadCommunity();
     
     // Subscribe to chat
-    const chatType = (type as string) === 'team' ? 'team' : 
-                     (type as string) === 'league' ? 'league' : 'community';
-    
     const unsubscribeChat = chatService.subscribeToChat(
       id as string, 
-      setMessages,
-      chatType as ChatRoomType
+      setMessages
     );
 
     // Join presence
@@ -74,8 +72,10 @@ export default function CommunityChatScreen() {
         description: '',
         icon: '💬',
         color: '#0066CC',
-        type: (type as CommunityType) || 'custom',
-        members: '0'
+        type: (type === 'league' ? 'league' : 'team'),
+        members: '0',
+        activeNow: '0',
+        trending: false
       });
     }
   };

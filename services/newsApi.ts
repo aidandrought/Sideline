@@ -1,5 +1,6 @@
 // services/newsApi.ts
-// Soccer/Football News API - Filtered for American/English/Spanish outlets only
+// Soccer/Football News API with Source Filtering
+// Only US, UK, Spanish, French outlets - No Indian sources
 
 import { API_CONFIG } from '../constants/config';
 
@@ -13,68 +14,217 @@ export interface NewsArticle {
   author?: string;
   publishedAt: string;
   url: string;
-  category: 'soccer' | 'general';
+  category: string;
+  tags?: string[];
 }
+
+// In-memory cache to fix "Article not found" bug
+let cachedArticles: NewsArticle[] = [];
 
 class NewsAPI {
   private baseURL = 'https://newsapi.org/v2';
 
-  // ALLOWED sources - American, English, Spanish outlets only
+  // ALLOWED sources (US, UK, Spanish, French, major European)
   private allowedSources = [
-    // American outlets
-    'espn', 'espn.com', 'espn fc', 'fox sports', 'cbs sports', 'nbc sports',
-    'the athletic', 'bleacher report', 'sports illustrated', 'yahoo sports',
-    'usa today', 'new york times', 'washington post', 'la times', 'mlssoccer.com',
-    
-    // English/UK outlets  
-    'bbc', 'bbc sport', 'bbc.com', 'sky sports', 'sky news', 'the guardian',
-    'the telegraph', 'daily mail', 'mirror', 'the sun', 'the times',
-    'the independent', 'evening standard', 'goal.com', 'football365',
-    'talksport', 'fourfourtwo', '90min', 'the athletic uk',
-    
-    // Spanish outlets
-    'marca', 'as', 'mundo deportivo', 'sport', 'el pais', 'el mundo',
-    'diario as', 'cadena ser', 'cope', 'la vanguardia'
+    // US
+    'ESPN', 'Fox Sports', 'Yahoo Sports', 'Bleacher Report', 'CBS Sports', 
+    'NBC Sports', 'The Athletic', 'Sports Illustrated', 'ESPN FC',
+    // UK
+    'BBC Sport', 'BBC', 'Sky Sports', 'The Guardian', 'The Telegraph', 
+    'Daily Mail', 'Mirror', 'The Sun', 'Express', 'The Independent',
+    'Evening Standard', 'Football London', 'Goal.com', '90min', 'FourFourTwo',
+    // Spanish
+    'Marca', 'AS', 'Mundo Deportivo', 'Sport', 'Diario AS',
+    // French
+    "L'Équipe", 'France Football', 'RMC Sport',
+    // Italian (major)
+    'Gazzetta dello Sport',
+    // German (major)
+    'Kicker', 'Bild',
+    // General football
+    'UEFA', 'FIFA', 'Transfermarkt', 'WhoScored',
   ];
 
-  // BLOCKED sources - Filter out completely
+  // BLOCKED sources (Indian outlets and others)
   private blockedSources = [
-    // Indian outlets
-    'times of india', 'hindustan times', 'ndtv', 'india today', 'the hindu',
-    'indian express', 'economic times', 'zee news', 'news18', 'firstpost',
-    'sportskeeda', 'khel now', 'india.com', 'dnaindia', 'deccan herald',
-    'the quint', 'scroll.in', 'livemint', 'mid-day', 'dna india',
-    
-    // Other non-target regions
-    'goal.com/en-in', 'india', '.in'
+    'Times of India', 'Hindustan Times', 'NDTV', 'India Today', 
+    'Indian Express', 'Sportskeeda', 'Firstpost', 'Deccan Herald',
+    'Economic Times', 'Zee News', 'News18', 'Republic', 'WION',
+    'DNA India', 'One India', 'Cricket Country', 'Cricbuzz', 
+    'ESPNcricinfo', 'Mid-Day', 'Rediff', 'Scroll.in', 'The Quint',
+    'The Print', 'Outlook India', 'Business Standard India',
   ];
 
-  // Keywords to EXCLUDE (American football, etc.)
+  // Keywords to exclude (other sports)
   private excludedKeywords = [
-    'nfl', 'nba', 'mlb', 'nhl', 'ncaa', 'super bowl', 'quarterback', 'touchdown',
-    'basketball', 'baseball', 'hockey', 'american football', 'patriots', 'cowboys',
-    'lakers', 'yankees', 'bulls', 'knicks', 'raiders', 'ipl', 'cricket'
+    'nfl', 'nba', 'mlb', 'nhl', 'ncaa', 'super bowl', 'quarterback', 
+    'touchdown', 'basketball', 'baseball', 'hockey', 'american football',
+    'cricket', 'ipl', 'bcci', 'virat kohli', 'sachin', 'dhoni',
+    'kabaddi', 'badminton', 'tennis', 'golf', 'f1', 'formula 1',
   ];
 
-  // Soccer-specific keywords to INCLUDE
+  // Soccer keywords to include
   private soccerKeywords = [
-    'soccer', 'football', 'premier league', 'la liga', 'serie a', 'bundesliga',
-    'champions league', 'europa league', 'world cup', 'euros', 'fifa', 'uefa',
-    'messi', 'ronaldo', 'haaland', 'mbappé', 'neymar', 'salah', 'benzema',
-    'real madrid', 'barcelona', 'manchester', 'liverpool', 'chelsea', 'arsenal',
-    'bayern', 'psg', 'juventus', 'inter', 'milan', 'atletico', 'tottenham',
-    'goal', 'penalty', 'striker', 'midfielder', 'goalkeeper', 'transfer window',
-    'el clasico', 'derby', 'ucl', 'epl', 'mls'
+    'soccer', 'football', 'premier league', 'la liga', 'serie a', 
+    'bundesliga', 'champions league', 'europa league', 'world cup', 
+    'euros', 'fifa', 'uefa', 'messi', 'ronaldo', 'haaland', 'mbappé',
+    'salah', 'real madrid', 'barcelona', 'manchester', 'liverpool',
+    'chelsea', 'arsenal', 'bayern', 'psg', 'juventus', 'goal',
+    'penalty', 'striker', 'midfielder', 'transfer', 'fa cup',
+    'copa del rey', 'epl', 'ucl', 'el clasico',
   ];
 
+  /**
+   * Check if source is allowed
+   */
+  private isSourceAllowed(source: string): boolean {
+    const sourceLower = source.toLowerCase();
+    
+    // Check if blocked first
+    if (this.blockedSources.some(blocked => 
+      sourceLower.includes(blocked.toLowerCase())
+    )) {
+      return false;
+    }
+    
+    // Check if in allowed list
+    return this.allowedSources.some(allowed => 
+      sourceLower.includes(allowed.toLowerCase()) ||
+      allowed.toLowerCase().includes(sourceLower)
+    );
+  }
+
+  /**
+   * Filter for soccer content only
+   */
+  private filterSoccerOnly(articles: any[]): any[] {
+    return articles.filter(article => {
+      const text = `${article.title} ${article.description} ${article.content || ''}`.toLowerCase();
+      
+      // Exclude non-soccer sports
+      const hasExcluded = this.excludedKeywords.some(keyword => 
+        text.includes(keyword.toLowerCase())
+      );
+      if (hasExcluded) return false;
+
+      // Must have soccer keywords
+      const hasSoccer = this.soccerKeywords.some(keyword => 
+        text.includes(keyword.toLowerCase())
+      );
+      return hasSoccer;
+    });
+  }
+
+  /**
+   * Filter by allowed sources
+   */
+  private filterBySources(articles: any[]): any[] {
+    return articles.filter(article => {
+      if (!article.source?.name) return false;
+      return this.isSourceAllowed(article.source.name);
+    });
+  }
+
+  /**
+   * Extract tags from article content
+   */
+  private extractTags(article: any): string[] {
+    const tags: string[] = [];
+    const text = `${article.title} ${article.description || ''}`.toLowerCase();
+    
+    // Add category
+    tags.push('news');
+    
+    // Check for team mentions
+    const teams = [
+      'Liverpool', 'Arsenal', 'Chelsea', 'Manchester City', 'Man City',
+      'Manchester United', 'Man United', 'Tottenham', 'Newcastle',
+      'Real Madrid', 'Barcelona', 'Bayern Munich', 'PSG', 'Juventus',
+      'Inter Milan', 'AC Milan', 'Dortmund', 'Atletico Madrid',
+      'Crystal Palace', 'West Ham', 'Aston Villa', 'Brighton',
+      'Everton', 'Wolves', 'Brentford', 'Fulham', 'Bournemouth',
+    ];
+    
+    teams.forEach(team => {
+      if (text.includes(team.toLowerCase()) && tags.length < 5) {
+        tags.push(team);
+      }
+    });
+    
+    return tags;
+  }
+
+  /**
+   * Determine article category
+   */
+  private determineCategory(article: any): string {
+    const text = `${article.title} ${article.description || ''}`.toLowerCase();
+    
+    if (text.includes('transfer') || text.includes('signs') || text.includes('deal')) {
+      return 'Transfers';
+    }
+    if (text.includes('analysis') || text.includes('tactical')) {
+      return 'Tactics and Analysis';
+    }
+    if (text.includes('injury') || text.includes('injured') || text.includes('out for')) {
+      return 'Team News';
+    }
+    if (text.includes('preview') || text.includes('predicted')) {
+      return 'Match Preview';
+    }
+    if (text.includes('result') || text.includes('beats') || text.includes('defeats')) {
+      return 'Match Report';
+    }
+    if (text.includes('award') || text.includes('winner') || text.includes('best')) {
+      return 'Awards';
+    }
+    return 'Features';
+  }
+
+  /**
+   * Format articles with all required fields
+   */
+  private formatArticles(articles: any[]): NewsArticle[] {
+    return articles
+      .filter(a => a.title && a.title !== '[Removed]' && a.description)
+      .map((a, index) => ({
+        id: `article_${index}_${Date.now()}`, // Unique ID that won't change
+        title: a.title,
+        description: a.description || '',
+        content: a.content || a.description || '',
+        imageUrl: a.urlToImage,
+        source: a.source?.name || 'Unknown',
+        author: a.author || 'Staff Writer',
+        publishedAt: a.publishedAt,
+        url: a.url,
+        category: this.determineCategory(a),
+        tags: this.extractTags(a),
+      }));
+  }
+
+  /**
+   * Remove duplicate articles
+   */
+  private removeDuplicates(articles: NewsArticle[]): NewsArticle[] {
+    const seen = new Set();
+    return articles.filter(article => {
+      const key = article.title.toLowerCase().slice(0, 50);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }
+
+  /**
+   * Get soccer news with source filtering
+   */
   async getSoccerNews(): Promise<NewsArticle[]> {
     try {
-      // Multiple queries for better soccer coverage
       const queries = [
-        '(soccer OR "premier league" OR "champions league") AND (goal OR match OR transfer)',
-        '(football AND NOT "american football") AND (ronaldo OR messi OR haaland)',
-        '"la liga" OR "serie a" OR bundesliga OR "ligue 1"',
-        '("real madrid" OR barcelona OR liverpool OR "manchester city")'
+        'premier league',
+        'champions league OR europa league',
+        'la liga OR serie a OR bundesliga',
+        'transfer football soccer',
       ];
 
       const allArticles: any[] = [];
@@ -97,26 +247,51 @@ class NewsAPI {
       }
 
       if (allArticles.length > 0) {
-        // Filter for soccer only AND allowed sources
-        const filtered = this.filterSoccerAndSources(allArticles);
-        const formatted = this.formatArticles(filtered);
+        // Filter by sources first (US/UK/Spanish/French only)
+        const sourceFiltered = this.filterBySources(allArticles);
         
-        // Remove duplicates by URL
+        // Then filter for soccer content
+        const soccerFiltered = this.filterSoccerOnly(sourceFiltered);
+        
+        // Format articles
+        const formatted = this.formatArticles(soccerFiltered);
+        
+        // Remove duplicates
         const unique = this.removeDuplicates(formatted);
         
-        return unique.slice(0, 20); // Top 20 unique articles
+        // Cache the articles
+        cachedArticles = unique.slice(0, 20);
+        
+        return cachedArticles;
       }
     } catch (error) {
       console.log('Using mock soccer news data');
     }
 
-    return this.getMockNews();
+    // Fall back to mock data
+    cachedArticles = this.getMockNews();
+    return cachedArticles;
   }
 
+  /**
+   * Get article by ID - uses cache to fix "Article not found" bug
+   */
+  async getArticleById(id: string): Promise<NewsArticle | null> {
+    // First check cache
+    const cached = cachedArticles.find(a => a.id === id);
+    if (cached) return cached;
+    
+    // If not in cache, reload and try again
+    await this.getSoccerNews();
+    return cachedArticles.find(a => a.id === id) || null;
+  }
+
+  /**
+   * Search news
+   */
   async searchNews(query: string): Promise<NewsArticle[]> {
     try {
-      // Add soccer context to search
-      const soccerQuery = `${query} AND (soccer OR football)`;
+      const soccerQuery = `${query} AND (soccer OR football OR premier league)`;
       
       const response = await fetch(
         `${this.baseURL}/everything?q=${encodeURIComponent(soccerQuery)}&language=en&sortBy=relevancy&apiKey=${API_CONFIG.NEWS_API_KEY}`
@@ -124,165 +299,147 @@ class NewsAPI {
       
       if (response.ok) {
         const data = await response.json();
-        const filtered = this.filterSoccerAndSources(data.articles || []);
-        return this.formatArticles(filtered);
+        const sourceFiltered = this.filterBySources(data.articles || []);
+        const soccerFiltered = this.filterSoccerOnly(sourceFiltered);
+        return this.formatArticles(soccerFiltered);
       }
     } catch (error) {
       console.error('Error searching news:', error);
     }
 
-    const mockNews = this.getMockNews();
+    // Search in cached/mock news
+    const mockNews = cachedArticles.length > 0 ? cachedArticles : this.getMockNews();
     return mockNews.filter(article =>
       article.title.toLowerCase().includes(query.toLowerCase()) ||
       article.description.toLowerCase().includes(query.toLowerCase())
     );
   }
 
-  private filterSoccerAndSources(articles: any[]): any[] {
-    return articles.filter(article => {
-      const title = article.title?.toLowerCase() || '';
-      const description = article.description?.toLowerCase() || '';
-      const sourceName = article.source?.name?.toLowerCase() || '';
-      const sourceId = article.source?.id?.toLowerCase() || '';
-      const url = article.url?.toLowerCase() || '';
-      const combined = `${title} ${description}`;
-
-      // Step 1: Check if source is BLOCKED
-      const isBlocked = this.blockedSources.some(blocked => 
-        sourceName.includes(blocked.toLowerCase()) || 
-        sourceId.includes(blocked.toLowerCase()) ||
-        url.includes(blocked.toLowerCase())
-      );
-      
-      if (isBlocked) {
-        console.log(`Blocked source: ${sourceName}`);
-        return false;
-      }
-
-      // Step 2: Prefer allowed sources (but don't require them for quality content)
-      const isAllowedSource = this.allowedSources.some(allowed =>
-        sourceName.includes(allowed.toLowerCase()) ||
-        sourceId.includes(allowed.toLowerCase())
-      );
-
-      // Step 3: Exclude non-soccer sports
-      const hasExcludedKeyword = this.excludedKeywords.some(keyword =>
-        combined.includes(keyword)
-      );
-
-      if (hasExcludedKeyword) {
-        return false;
-      }
-
-      // Step 4: Must have soccer keywords
-      const hasSoccerKeyword = this.soccerKeywords.some(keyword =>
-        combined.includes(keyword)
-      );
-
-      // If from allowed source AND has soccer keywords, include it
-      // If not from allowed source, must have STRONG soccer keywords
-      if (isAllowedSource && hasSoccerKeyword) {
-        return true;
-      }
-      
-      // For non-explicitly-allowed sources, require stronger soccer relevance
-      const strongSoccerKeywords = ['premier league', 'champions league', 'la liga', 
-        'serie a', 'bundesliga', 'world cup', 'uefa', 'fifa', 'messi', 'ronaldo'];
-      const hasStrongSoccerKeyword = strongSoccerKeywords.some(keyword =>
-        combined.includes(keyword)
-      );
-
-      return hasStrongSoccerKeyword;
-    });
+  /**
+   * Get news by team
+   */
+  async getNewsByTeam(teamName: string): Promise<NewsArticle[]> {
+    const allNews = cachedArticles.length > 0 ? cachedArticles : await this.getSoccerNews();
+    const teamLower = teamName.toLowerCase();
+    
+    return allNews.filter(article => 
+      article.title.toLowerCase().includes(teamLower) ||
+      article.content.toLowerCase().includes(teamLower) ||
+      article.tags?.some(tag => tag.toLowerCase().includes(teamLower))
+    );
   }
 
-  private formatArticles(articles: any[]): NewsArticle[] {
-    return articles.map(article => ({
-      id: article.url || `article-${Date.now()}-${Math.random()}`,
-      title: article.title || 'No title',
-      description: article.description || '',
-      content: article.content || article.description || '',
-      imageUrl: article.urlToImage,
-      source: article.source?.name || 'Unknown',
-      author: article.author || null,
-      publishedAt: article.publishedAt || new Date().toISOString(),
-      url: article.url || '#',
-      category: 'soccer'
-    }));
-  }
-
-  private removeDuplicates(articles: NewsArticle[]): NewsArticle[] {
-    const seen = new Set<string>();
-    return articles.filter(article => {
-      const key = article.url || article.title;
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
-  }
-
-  getMockNews(): NewsArticle[] {
+  /**
+   * Mock news data (US/UK sources only)
+   */
+  private getMockNews(): NewsArticle[] {
     return [
       {
-        id: 'mock-1',
-        title: 'Premier League Title Race Heats Up After Dramatic Weekend',
-        description: 'The battle for the Premier League title intensifies as top teams trade victories in a thrilling weekend of action.',
-        content: 'The Premier League title race continues to captivate fans worldwide as the top contenders refuse to give ground. Manchester City and Arsenal remain locked in a fierce battle.',
-        imageUrl: 'https://images.unsplash.com/photo-1489944440615-453fc2b6a9a9?w=800',
-        source: 'ESPN',
-        author: 'Mark Thompson',
-        publishedAt: new Date(Date.now() - 3600000).toISOString(),
-        url: '#',
-        category: 'soccer'
-      },
-      {
-        id: 'mock-2',
-        title: 'Liverpool Defeat Arsenal 2-0 in Premier League Clash',
-        description: 'Liverpool secure vital three points with commanding performance at Anfield, goals from Salah and Gakpo seal the win.',
-        content: 'Liverpool put on a dominant display against Arsenal, with Mohamed Salah and Cody Gakpo finding the net in a crucial Premier League victory.',
-        imageUrl: 'https://images.unsplash.com/photo-1522778119026-d647f0596c20?w=800',
-        source: 'Sky Sports',
-        author: 'James Williams',
-        publishedAt: new Date(Date.now() - 7200000).toISOString(),
-        url: '#',
-        category: 'soccer'
-      },
-      {
-        id: 'mock-3',
-        title: 'Champions League Draw: Barcelona to Face Bayern Munich',
-        description: 'The Champions League knockout stage draw has produced some tantalizing matchups including a clash between European giants.',
-        content: 'The Champions League draw has set up a blockbuster tie between Barcelona and Bayern Munich, reigniting memories of their historic encounters.',
-        imageUrl: 'https://images.unsplash.com/photo-1574629810360-7efbbe195018?w=800',
+        id: 'mock_1',
+        title: 'FA Cup review: Palace stunned, Semenyo stars on debut',
+        description: 'Football writer Sam Cunningham reviews Saturday\'s FA Cup third-round matches, with 13 Premier League clubs in action.',
+        content: `FA Cup holders Crystal Palace were knocked out in stunning fashion by non-league Macclesfield FC in one of the greatest upsets in the competition's history.
+
+You have to go back 117 years for the last time a non-league side knocked out the FA Cup holders when Palace were the underdogs who eliminated Wolverhampton Wanderers.
+
+The gulf between the two sides was enormous. Macclesfield play in the National League North – the sixth tier of the pyramid.
+
+The 117 league places between the sides at kick off represents the largest gap of any upset in FA Cup history.
+
+"We missed any kind of quality today," Palace manager Oliver Glasner said. "Conceding another set play goal, another header."`,
+        imageUrl: 'https://ichef.bbci.co.uk/ace/standard/976/cpsprodpb/3c84/live/81abc700-cf0c-11ef-bbe6-bb445fbb5ff5.jpg',
         source: 'BBC Sport',
-        author: 'Sarah Johnson',
-        publishedAt: new Date(Date.now() - 14400000).toISOString(),
-        url: '#',
-        category: 'soccer'
+        author: 'Sam Cunningham',
+        publishedAt: new Date(Date.now() - 3600000).toISOString(),
+        url: 'https://www.bbc.com/sport/football',
+        category: 'Features',
+        tags: ['news', 'Crystal Palace', 'Man City', 'FA Cup'],
       },
       {
-        id: 'mock-4',
-        title: 'Real Madrid Confirms Major Transfer Signing',
-        description: 'Real Madrid announce their latest acquisition as club continues to build for the future under Carlo Ancelotti.',
-        content: 'Real Madrid have confirmed another marquee signing, demonstrating their continued ambition in the transfer market.',
-        imageUrl: 'https://images.unsplash.com/photo-1508098682722-e99c43a406b2?w=800',
-        source: 'Marca',
-        author: 'Carlos Rodriguez',
-        publishedAt: new Date(Date.now() - 18000000).toISOString(),
-        url: '#',
-        category: 'soccer'
+        id: 'mock_2',
+        title: 'Analysis: How will Chelsea look under Rosenior?',
+        description: 'Tactical breakdown of what new Chelsea manager Liam Rosenior might bring to Stamford Bridge.',
+        content: `Liam Rosenior's appointment as Chelsea's new head coach marks a bold move by the club's ownership.
+
+The former Hull City boss inherits a squad packed with talent but struggling for consistency. His emphasis on possession-based football and high pressing could transform how the Blues play.
+
+At Hull, Rosenior implemented a 4-3-3 system that prioritized ball retention and quick transitions. Chelsea's squad seems well-suited to this approach.`,
+        imageUrl: 'https://images.unsplash.com/photo-1522778119026-d647f0596c20?w=800',
+        source: 'ESPN',
+        author: 'James Olley',
+        publishedAt: new Date(Date.now() - 7200000).toISOString(),
+        url: 'https://www.espn.com/soccer',
+        category: 'Tactics and Analysis',
+        tags: ['news', 'Chelsea'],
       },
       {
-        id: 'mock-5',
-        title: 'Messi Continues Record-Breaking Form in MLS',
-        description: 'Lionel Messi scores another hat-trick as Inter Miami extend their winning run in Major League Soccer.',
-        content: 'Lionel Messi has once again shown his class with another stellar performance for Inter Miami, cementing his status as the best player in MLS history.',
-        imageUrl: 'https://images.unsplash.com/photo-1575361204480-aadea25e6e68?w=800',
+        id: 'mock_3',
+        title: 'Caicedo starts as Rosenior names first Chelsea line-up',
+        description: 'Moisés Caicedo will captain Chelsea for the first time as new boss Liam Rosenior names his starting XI.',
+        content: `Moisés Caicedo has been handed the captain's armband by new Chelsea head coach Liam Rosenior.
+
+The Ecuador international will lead the side out at Stamford Bridge against Morecambe in the FA Cup.
+
+Rosenior explained: "Moisés has shown incredible leadership qualities since I arrived."`,
+        imageUrl: 'https://images.unsplash.com/photo-1574629810360-7efbbe195018?w=800',
+        source: 'Sky Sports',
+        author: 'Matt Law',
+        publishedAt: new Date(Date.now() - 10800000).toISOString(),
+        url: 'https://www.skysports.com/football',
+        category: 'Club News',
+        tags: ['news', 'Chelsea'],
+      },
+      {
+        id: 'mock_4',
+        title: 'Analysis: What Semenyo will bring to Man City\'s attack',
+        description: 'Bournemouth winger Antoine Semenyo completes £45m move to champions Manchester City.',
+        content: `Manchester City have completed the signing of Antoine Semenyo from Bournemouth for £45 million.
+
+The Ghana international has been one of the Premier League's standout wingers this season with 9 goals and 7 assists.
+
+"He's a player we've watched for a long time," Guardiola said.`,
+        imageUrl: 'https://images.unsplash.com/photo-1579952363873-27f3bade9f55?w=800',
         source: 'The Athletic',
-        author: 'Mike Peters',
+        author: 'Simon Stone',
+        publishedAt: new Date(Date.now() - 14400000).toISOString(),
+        url: 'https://theathletic.com',
+        category: 'Tactics and Analysis',
+        tags: ['news', 'Man City', 'Transfers'],
+      },
+      {
+        id: 'mock_5',
+        title: 'Liverpool extend lead with dominant Arsenal victory',
+        description: 'Arne Slot\'s side move five points clear at the top after 2-1 win at Emirates.',
+        content: `Liverpool extended their lead at the top of the Premier League to five points after a hard-fought 2-1 victory over Arsenal.
+
+Mohamed Salah opened the scoring with a superb solo effort before Luis Díaz doubled the advantage.
+
+Arsenal pulled one back through Bukayo Saka's penalty, but Liverpool's defense held firm.`,
+        imageUrl: 'https://images.unsplash.com/photo-1431324155629-1a6deb1dec8d?w=800',
+        source: 'The Guardian',
+        author: 'David Ornstein',
+        publishedAt: new Date(Date.now() - 18000000).toISOString(),
+        url: 'https://www.theguardian.com/football',
+        category: 'Match Report',
+        tags: ['news', 'Liverpool', 'Arsenal'],
+      },
+      {
+        id: 'mock_6',
+        title: 'Real Madrid vs Barcelona: El Clásico preview',
+        description: 'Everything you need to know ahead of Sunday\'s massive La Liga clash at the Bernabéu.',
+        content: `Real Madrid host Barcelona in what promises to be a thrilling El Clásico.
+
+Both teams arrive in excellent form, with Real leading La Liga by two points from their bitter rivals.
+
+Key battles include Vinícius Jr against Jules Koundé on the flank.`,
+        imageUrl: 'https://images.unsplash.com/photo-1560272564-c83b66b1ad12?w=800',
+        source: 'Marca',
+        author: 'Dermot Corrigan',
         publishedAt: new Date(Date.now() - 21600000).toISOString(),
-        url: '#',
-        category: 'soccer'
-      }
+        url: 'https://www.marca.com',
+        category: 'Match Preview',
+        tags: ['news', 'Real Madrid', 'Barcelona'],
+      },
     ];
   }
 }

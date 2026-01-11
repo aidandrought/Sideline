@@ -9,7 +9,9 @@ export default function RootLayout() {
     <AuthProvider>
       <Stack screenOptions={{ headerShown: false }}>
         {/* Auth Screens */}
-        <Stack.Screen name="(auth)" />
+        <Stack.Screen name="(auth)/login" />
+<Stack.Screen name="(auth)/signup" />
+
         
         {/* Main Tab Navigation */}
         <Stack.Screen name="(tabs)" />
