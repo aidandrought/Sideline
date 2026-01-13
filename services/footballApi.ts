@@ -161,7 +161,7 @@ class FootballAPI {
         const formatted = this.formatMatches(filtered, 'live');
         
         // Sort by league importance
-        return this.sortByImportance(formatted).slice(0, 8);
+        return this.sortByImportance(formatted).slice(0, 60);
       } else {
         console.log('No live matches found');
         return [];
@@ -173,77 +173,68 @@ class FootballAPI {
     return [];
   }
 
-  async getUpcomingMatches(date?: string): Promise<Match[]> {
-    try {
-      const today = new Date();
-      const tomorrow = new Date(today);
-      tomorrow.setDate(tomorrow.getDate() + 1);
-      
-      const todayStr = today.toISOString().split('T')[0];
-      const tomorrowStr = tomorrow.toISOString().split('T')[0];
+async getUpcomingMatches(): Promise<Match[]> {
+  try {
+    const startDate = new Date();
+    const daysAhead = 7;
+    const timezone = 'America/Los_Angeles';
 
-      const [todayData, tomorrowData] = await Promise.all([
-        this.fetch(`/fixtures?date=${todayStr}&timezone=America/Los_Angeles`),
-        this.fetch(`/fixtures?date=${tomorrowStr}&timezone=America/Los_Angeles`)
-      ]);
-
-      const allFixtures = [
-        ...(todayData?.response || []),
-        ...(tomorrowData?.response || [])
-      ];
-
-      if (allFixtures.length > 0) {
-        console.log(`Found ${allFixtures.length} total upcoming fixtures`);
-        
-        // STRICT filtering
-        const filtered = allFixtures.filter((f: any) => {
-          // Must not be started
-          if (f.fixture.status.short !== 'NS') return false;
-          
-          // Must be from allowed league ID
-          const isAllowedLeague = this.allowedLeagueIds.includes(f.league.id);
-          
-          // OR must involve a priority team
-          const hasPriorityTeam = this.priorityTeams.some(team => 
-            f.teams.home.name.toLowerCase().includes(team.toLowerCase()) ||
-            f.teams.away.name.toLowerCase().includes(team.toLowerCase())
-          );
-          
-          if (!isAllowedLeague && !hasPriorityTeam) {
-            return false;
-          }
-          
-          // Block youth/reserve teams
-          const leagueName = f.league.name.toLowerCase();
-          const homeName = f.teams.home.name.toLowerCase();
-          const awayName = f.teams.away.name.toLowerCase();
-          
-          const hasBlockedKeyword = this.blockedKeywords.some(keyword =>
-            leagueName.includes(keyword) ||
-            homeName.includes(keyword) ||
-            awayName.includes(keyword)
-          );
-          
-          return !hasBlockedKeyword;
-        });
-
-        console.log(`Filtered to ${filtered.length} upcoming matches from top leagues`);
-
-        const formatted = this.formatMatches(filtered, 'upcoming');
-        
-        // Sort by time
-        formatted.sort((a, b) => 
-          new Date(a.date).getTime() - new Date(b.date).getTime()
-        );
-
-        return formatted.slice(0, 8);
-      }
-    } catch (error) {
-      console.error('Error fetching upcoming matches:', error);
+    // Build array of date strings
+    const dateStrings: string[] = [];
+    for (let i = 0; i < daysAhead; i++) {
+      const d = new Date(startDate);
+      d.setDate(startDate.getDate() + i);
+      dateStrings.push(d.toISOString().split('T')[0]);
     }
-    
+
+    // Fetch **each day individually** (API seems to ignore ranges)
+    const fixturesArray = await Promise.all(
+      dateStrings.map(d =>
+        this.fetch(`/fixtures?date=${d}&timezone=${timezone}`)
+      )
+    );
+
+    const allFixtures = fixturesArray.flatMap(data => data?.response || []);
+
+    if (allFixtures.length === 0) return this.getMockUpcomingMatches();
+
+    // STRICT filtering
+    const filtered = allFixtures.filter((f: any) => {
+      if (f.fixture.status.short !== 'NS') return false;
+
+      const isAllowedLeague = this.allowedLeagueIds.includes(f.league.id);
+      const hasPriorityTeam = this.priorityTeams.some(team =>
+        f.teams.home.name.toLowerCase().includes(team.toLowerCase()) ||
+        f.teams.away.name.toLowerCase().includes(team.toLowerCase())
+      );
+
+      if (!isAllowedLeague && !hasPriorityTeam) return false;
+
+      const leagueName = f.league.name.toLowerCase();
+      const homeName = f.teams.home.name.toLowerCase();
+      const awayName = f.teams.away.name.toLowerCase();
+
+      const hasBlockedKeyword = this.blockedKeywords.some(keyword =>
+        leagueName.includes(keyword) ||
+        homeName.includes(keyword) ||
+        awayName.includes(keyword)
+      );
+
+      return !hasBlockedKeyword;
+    });
+
+    const formatted = this.formatMatches(filtered, 'upcoming');
+
+    formatted.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+
+    return formatted.slice(0, 60);
+  } catch (error) {
+    console.error('Error fetching upcoming matches:', error);
     return this.getMockUpcomingMatches();
   }
+}
+
+
 
   /**
    * Sort matches by league importance
@@ -317,10 +308,9 @@ class FootballAPI {
         minute: f.fixture.status.elapsed ? `${f.fixture.status.elapsed}'` : undefined,
         date: f.fixture.date,
         time: status === 'upcoming' ? new Date(f.fixture.date).toLocaleTimeString('en-US', {
-          hour: 'numeric',
-          minute: '2-digit',
-          timeZone: 'America/Los_Angeles'
-        }) : undefined,
+  hour: 'numeric',
+  minute: '2-digit',
+}) : undefined,
         activeUsers: Math.floor(Math.random() * 5000) + 1000
       };
     });

@@ -9,7 +9,9 @@ import { useEffect, useState } from 'react';
 import { Alert, Dimensions, Image, RefreshControl, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useAuth } from '../../context/AuthContext';
 import { db } from '../../firebaseConfig';
+import { footballAPI } from '../../services/footballApi';
 import { newsAPI, NewsArticle } from '../../services/newsApi';
+
 
 const { width } = Dimensions.get('window');
 
@@ -171,17 +173,100 @@ export default function HomeScreen() {
     }
   }, [userProfile]);
 
-  const loadData = async () => {
-    try {
-      setLiveMatches([TEST_LIVE_MATCH]);
-      setUpcomingMatches(SAMPLE_UPCOMING);
-      
-      const newsData = await newsAPI.getSoccerNews();
-      setNews(newsData.slice(0, 6));
-    } catch (error) {
-      console.error('Error loading data:', error);
-    }
-  };
+ const loadData = async () => {
+  try {
+    const now = new Date();
+
+    // Get matches from API
+    const upcomingFromAPI = await footballAPI.getUpcomingMatches();
+
+    const live: LiveMatch[] = [];
+    const upcoming: UpcomingMatch[] = [];
+
+    // Separate live vs upcoming
+    upcomingFromAPI.forEach((match) => {
+      const kickoffTime = new Date(match.date);
+
+      if (kickoffTime <= now) {
+        // Live match
+        live.push({
+          id: match.id.toString(),
+          home: match.home,
+          away: match.away,
+          homeIcon: '⚪',
+          awayIcon: '⚪',
+          score: match.score || '0-0',
+          minute: match.minute || "0'",
+          league: match.league,
+          activeUsers: '0',
+        });
+      } else {
+        // Upcoming
+        upcoming.push({
+          id: match.id.toString(),
+          home: match.home,
+          away: match.away,
+          homeIcon: '⚪',
+          awayIcon: '⚪',
+          league: match.league,
+          kickoff: formatKickoffTime(match.date),
+          kickoffFull: new Date(match.date).toLocaleString('en-US', {
+            weekday: 'long',
+            month: 'short',
+            day: 'numeric',
+            hour: 'numeric',
+            minute: '2-digit',
+          }),
+          kickoffTime,
+          venue: match.league,
+        });
+      }
+    });
+
+    // ✅ Add the hardcoded test match
+    live.push(TEST_LIVE_MATCH);
+
+    // Sort by activeUsers
+    live.sort((a, b) => {
+      const parseUsers = (s: string) => parseFloat(s.replace('K','')) * 1000;
+      return parseUsers(b.activeUsers || '0') - parseUsers(a.activeUsers || '0');
+    });
+
+    // Update state
+    setLiveMatches(live.slice(0, 8));
+    setUpcomingMatches(upcoming.slice(0, 8));
+
+    // Load news
+    const newsData = await newsAPI.getSoccerNews();
+    setNews(newsData.slice(0, 12));
+
+  } catch (error) {
+    console.error('Error loading data:', error);
+  }
+};
+
+
+
+// Helper function - add this BEFORE the loadData function
+const formatKickoffTime = (dateString: string): string => {
+  const date = new Date(dateString);
+  const now = new Date();
+  const tomorrow = new Date(now);
+  tomorrow.setDate(tomorrow.getDate() + 1);
+  
+  const isToday = date.toDateString() === now.toDateString();
+  const isTomorrow = date.toDateString() === tomorrow.toDateString();
+  
+  const dayName = date.toLocaleDateString('en-US', { weekday: 'short' });
+  const time = date.toLocaleTimeString('en-US', {
+    hour: 'numeric',
+    minute: '2-digit',
+  });
+  
+  if (isToday) return `Today ${time}`;
+  if (isTomorrow) return `Tomorrow ${time}`;
+  return `${dayName} ${time}`;
+};
 
   const loadSubscriptions = async () => {
     if (!userProfile?.uid) return;
@@ -453,12 +538,12 @@ export default function HomeScreen() {
             </View>
             
             <ScrollView 
-              horizontal 
-              showsHorizontalScrollIndicator={false}
-              contentContainerStyle={styles.horizontalScroll}
-            >
-              {liveMatches.map((match) => renderLiveMatch(match))}
-            </ScrollView>
+  horizontal 
+  showsHorizontalScrollIndicator={false}
+  contentContainerStyle={styles.horizontalScroll}
+>
+  {liveMatches.slice(0, 8).map((match) => renderLiveMatch(match))}
+</ScrollView>
           </View>
         )}
 
@@ -476,26 +561,26 @@ export default function HomeScreen() {
             showsHorizontalScrollIndicator={false}
             contentContainerStyle={styles.horizontalScroll}
           >
-            {upcomingMatches.slice(0, 6).map((match) => renderUpcomingMatch(match))}
+            {upcomingMatches.slice(0, 8).map((match) => renderUpcomingMatch(match))}
           </ScrollView>
         </View>
 
         {/* News Section */}
         <View style={styles.section}>
-          <View style={styles.sectionHeader}>
-            <Text style={styles.sectionTitle}>Latest News</Text>
-            <TouchableOpacity onPress={() => router.push('/news' as any)}>
-              <Text style={styles.seeAllText}>See All</Text>
-            </TouchableOpacity>
-          </View>
+  <View style={styles.sectionHeader}>
+    <Text style={styles.sectionTitle}>Latest News</Text>
+    <TouchableOpacity onPress={() => router.push('/explore?filter=news' as any)}>
+      <Text style={styles.seeAllText}>View All</Text>
+    </TouchableOpacity>
+  </View>
 
-          <View style={styles.newsContainer}>
-            {news[0] && renderHeroNews(news[0])}
-            <View style={styles.newsListSection}>
-              {news.slice(1, 5).map((article) => renderNewsListItem(article))}
-            </View>
-          </View>
-        </View>
+  <View style={styles.newsContainer}>
+    {news[0] && renderHeroNews(news[0])}
+    <View style={styles.newsListSection}>
+      {news.slice(1, 12).map((article) => renderNewsListItem(article))}
+    </View>
+  </View>
+</View>
 
         <View style={{ height: 40 }} />
       </ScrollView>
@@ -779,7 +864,6 @@ const styles = StyleSheet.create({
     paddingTop: 100,
     backgroundColor: 'transparent',
     // Gradient simulation with overlay
-    backgroundImage: 'linear-gradient(transparent, rgba(0,0,0,0.85))',
   },
   heroNewsBadge: {
     alignSelf: 'flex-start',

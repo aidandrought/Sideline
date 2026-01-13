@@ -1,175 +1,139 @@
 // services/chatService.ts
-// Firebase Realtime Database chat service
-// Each matchId gets its OWN isolated chat room
-
-import { off, onValue, push, ref, set } from 'firebase/database';
-import { realtimeDb } from '../firebaseConfig';
+// Temporary chat service using local state
+// Will integrate Firebase Realtime Database later
 
 export interface ChatMessage {
   id: string;
-  matchId: string;
   userId: string;
   username: string;
   text: string;
   timestamp: number;
-  reactions: { [emoji: string]: number };
+  reactions: {
+  [emoji: string]: {
+    count: number;
+    users: string[];
+  };
+};
   replyTo?: {
     messageId: string;
     username: string;
     text: string;
   };
-  type: 'user' | 'system';
+  type?: 'user' | 'system';
 }
 
-class ChatService {
-  private activeSubscriptions: Map<string, () => void> = new Map();
+// Temporary in-memory storage
+export class ChatService {
+  // Move chatRooms inside the class
+  private chatRooms: { [matchId: string]: ChatMessage[] } = {};
 
-  /**
-   * Subscribe to chat messages for a specific match
-   * Each matchId gets its own isolated chat room
-   */
-  subscribeToChat(matchId: string, callback: (messages: ChatMessage[]) => void): () => void {
-    // Unsubscribe from previous subscription if exists
-    this.unsubscribeFromChat(matchId);
-
-    const chatRef = ref(realtimeDb, `chats/${matchId}`);
-    const messages: ChatMessage[] = [];
-
-    // Listen for all messages in this chat room
-    const unsubscribe = onValue(chatRef, (snapshot) => {
-      const data = snapshot.val();
-      if (data) {
-        const messageList = Object.entries(data).map(([id, msg]: [string, any]) => ({
-          id,
-          matchId,
-          ...msg
-        }));
-        // Sort by timestamp
-        messageList.sort((a, b) => a.timestamp - b.timestamp);
-        callback(messageList);
-      } else {
-        // Initialize with welcome message if empty
-        this.initializeChatRoom(matchId).then(() => {
-          callback([]);
-        });
-      }
-    });
-
-    // Store unsubscribe function
-    this.activeSubscriptions.set(matchId, () => {
-      off(chatRef);
-    });
-
-    return () => this.unsubscribeFromChat(matchId);
-  }
-
-  /**
-   * Unsubscribe from a chat room
-   */
-  private unsubscribeFromChat(matchId: string) {
-    const unsubscribe = this.activeSubscriptions.get(matchId);
-    if (unsubscribe) {
-      unsubscribe();
-      this.activeSubscriptions.delete(matchId);
+  subscribeToChat(matchId: string, callback: (messages: ChatMessage[]) => void) {
+    if (!this.chatRooms[matchId]) {
+      this.chatRooms[matchId] = [
+        {
+          id: '1',
+          userId: 'user1',
+          username: 'SoccerFan92',
+          text: 'Great match so far! 🔥',
+          timestamp: Date.now() - 300000,
+          reactions: {
+            '❤️': { count: 5, users: ['user1', 'user2'] },
+            '👍': { count: 3, users: ['user3'] }
+          },
+          type: 'user'
+        },
+        {
+          id: '2',
+          type: 'system',
+          text: '⚽ GOAL! Match update!',
+          timestamp: Date.now() - 180000,
+          userId: 'system',
+          username: 'System',
+          reactions: {}
+        },
+        {
+          id: '3',
+          userId: 'user2',
+          username: 'FootballFanatic',
+          text: 'What a goal! Best team in the world!',
+          timestamp: Date.now() - 120000,
+          reactions: { '❤️': { count: 2, users: ['user2'] } },
+          type: 'user'
+        }
+      ];
     }
+
+    // Initial callback
+    callback(this.chatRooms[matchId]);
+
+    return () => {};
   }
 
-  /**
-   * Initialize a chat room with a welcome message
-   */
-  async initializeChatRoom(matchId: string): Promise<void> {
-    const chatRef = ref(realtimeDb, `chats/${matchId}`);
-    const newMessageRef = push(chatRef);
-    
-    await set(newMessageRef, {
-      matchId,
-      userId: 'system',
-      username: 'Sideline',
-      text: '⚽ Welcome to the match chat! Be respectful and enjoy the game!',
-      timestamp: Date.now(),
-      reactions: {},
-      type: 'system'
-    });
-  }
-
-  /**
-   * Send a message to a specific match chat
-   */
   async sendMessage(
     matchId: string,
     userId: string,
     username: string,
     text: string,
     replyTo?: ChatMessage['replyTo']
-  ): Promise<ChatMessage> {
-    const chatRef = ref(realtimeDb, `chats/${matchId}`);
-    const newMessageRef = push(chatRef);
-    
-    const messageData: Omit<ChatMessage, 'id'> = {
-      matchId,
+  ) {
+    const newMessage: ChatMessage = {
+      id: Date.now().toString(),
       userId,
       username,
       text,
       timestamp: Date.now(),
       reactions: {},
-      type: 'user',
-      ...(replyTo && { replyTo })
+      replyTo,
+      type: 'user'
     };
 
-    await set(newMessageRef, messageData);
+    if (!this.chatRooms[matchId]) {
+      this.chatRooms[matchId] = [];
+    }
 
-    return {
-      id: newMessageRef.key!,
-      ...messageData
-    };
+    this.chatRooms[matchId].push(newMessage);
+    return newMessage;
   }
 
-  /**
-   * Add a reaction to a message
-   */
-  async addReaction(matchId: string, messageId: string, emoji: string): Promise<void> {
-    const reactionRef = ref(realtimeDb, `chats/${matchId}/${messageId}/reactions/${emoji}`);
-    
-    // Get current count and increment
-    onValue(reactionRef, async (snapshot) => {
-      const currentCount = snapshot.val() || 0;
-      await set(reactionRef, currentCount + 1);
-    }, { onlyOnce: true });
+  async toggleReaction(matchId: string, messageId: string, emoji: string, userId: string) {
+    if (!this.chatRooms[matchId]) return;
+
+    const message = this.chatRooms[matchId].find(m => m.id === messageId);
+    if (!message) return;
+
+    if (!message.reactions[emoji]) {
+      message.reactions[emoji] = { count: 0, users: [] };
+    }
+
+    const users = message.reactions[emoji].users;
+    const hasReacted = users.includes(userId);
+
+    if (hasReacted) {
+      message.reactions[emoji].users = users.filter(u => u !== userId);
+    } else {
+      message.reactions[emoji].users.push(userId);
+    }
+
+    message.reactions[emoji].count = message.reactions[emoji].users.length;
   }
 
-  /**
-   * Send a system message (for goals, cards, etc.)
-   */
-  async sendSystemMessage(matchId: string, text: string): Promise<ChatMessage> {
-    const chatRef = ref(realtimeDb, `chats/${matchId}`);
-    const newMessageRef = push(chatRef);
-    
-    const messageData: Omit<ChatMessage, 'id'> = {
-      matchId,
-      userId: 'system',
-      username: 'Sideline',
+  async sendSystemMessage(matchId: string, text: string, icon: string) {
+    const systemMessage: ChatMessage = {
+      id: Date.now().toString(),
+      type: 'system',
       text,
+      userId: 'system',
+      username: 'System',
       timestamp: Date.now(),
-      reactions: {},
-      type: 'system'
+      reactions: {}
     };
 
-    await set(newMessageRef, messageData);
+    if (!this.chatRooms[matchId]) {
+      this.chatRooms[matchId] = [];
+    }
 
-    return {
-      id: newMessageRef.key!,
-      ...messageData
-    };
-  }
-
-  /**
-   * Clean up all subscriptions
-   */
-  cleanup(): void {
-    this.activeSubscriptions.forEach((unsubscribe, matchId) => {
-      unsubscribe();
-    });
-    this.activeSubscriptions.clear();
+    this.chatRooms[matchId].push(systemMessage);
+    return systemMessage;
   }
 }
 

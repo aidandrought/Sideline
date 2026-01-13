@@ -88,17 +88,19 @@ export default function CommunityChatScreen() {
                        community?.type === 'league' ? 'league' : 'community';
       
       await chatService.sendMessage(
-        id as string,
-        userProfile.uid,
-        userProfile.username,
-        message,
-        replyingTo ? {
-          messageId: replyingTo.id,
-          username: replyingTo.username,
-          text: replyingTo.text
-        } : undefined,
-        chatType as ChatRoomType
-      );
+      id as string,
+      userProfile.uid,
+      userProfile.username,
+      message,
+      replyingTo
+      ? {
+        messageId: replyingTo.id,
+        username: replyingTo.username,
+        text: replyingTo.text
+      }
+    : undefined
+);
+
 
       setMessage('');
       setReplyingTo(null);
@@ -123,19 +125,19 @@ export default function CommunityChatScreen() {
     const chatType = community?.type === 'team' ? 'team' : 
                      community?.type === 'league' ? 'league' : 'community';
     
-    await chatService.addReaction(
-      id as string, 
-      selectedMessage.id, 
-      emoji,
-      chatType as ChatRoomType
-    );
+    await chatService.toggleReaction(
+  id as string,
+  selectedMessage.id,
+  emoji,
+  userProfile!.uid // pass the current user ID
+);
     
     setShowEmojiPicker(false);
     setSelectedMessage(null);
   };
 
   const renderMessage = (msg: ChatMessage) => {
-    const isCurrentUser = msg.odId === userProfile?.uid;
+    const isCurrentUser = msg.userId === userProfile?.uid;
     const isSystem = msg.type === 'system';
 
     if (isSystem) {
@@ -183,12 +185,12 @@ export default function CommunityChatScreen() {
 
           {Object.keys(msg.reactions || {}).length > 0 && (
             <View style={styles.reactions}>
-              {Object.entries(msg.reactions).map(([emoji, count]) => (
-                <View key={emoji} style={styles.reaction}>
-                  <Text style={styles.reactionEmoji}>{emoji}</Text>
-                  <Text style={styles.reactionCount}>{count}</Text>
-                </View>
-              ))}
+              {Object.entries(msg.reactions).map(([emoji, reaction]) => (
+  <View key={emoji} style={styles.reaction}>
+    <Text style={styles.reactionEmoji}>{emoji}</Text>
+    <Text style={styles.reactionCount}>{reaction.count}</Text>
+  </View>
+))}
             </View>
           )}
 

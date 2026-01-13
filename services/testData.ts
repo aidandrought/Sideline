@@ -175,7 +175,11 @@ export const SAMPLE_CHAT_MESSAGES: Partial<ChatMessage>[] = [
     username: 'KopEnd_Legend',
     text: 'YNWA! Come on Liverpool! 🔴',
     timestamp: Date.now() - 2400000,
-    reactions: { '❤️': 24, '🔥': 12 },
+    reactions: {
+  '❤️': { count: 24, users: [] },
+  '🔥': { count: 12, users: [] }
+},
+
     type: 'user',
   },
   {
@@ -184,7 +188,10 @@ export const SAMPLE_CHAT_MESSAGES: Partial<ChatMessage>[] = [
     username: 'Gooner4Life',
     text: 'Arsenal are going to win this. Saka is on fire this season 🔥',
     timestamp: Date.now() - 2300000,
-    reactions: { '👍': 8, '😂': 5 },
+    reactions: {
+  '👍': { count: 8, users: [] },
+  '😂': { count: 5, users: [] }
+},
     type: 'user',
   },
   {
@@ -193,7 +200,11 @@ export const SAMPLE_CHAT_MESSAGES: Partial<ChatMessage>[] = [
     username: 'Sideline',
     text: "⚽ GOAL! Salah scores for Liverpool! 1-0 (23')",
     timestamp: Date.now() - 2000000,
-    reactions: { '⚽': 156, '🔥': 89, '❤️': 67 },
+    reactions: {
+  '⚽': { count: 156, users: [] },
+  '🔥': { count: 89, users: [] },
+  '❤️': { count: 67, users: [] }
+},
     type: 'system',
   },
   {
@@ -202,7 +213,11 @@ export const SAMPLE_CHAT_MESSAGES: Partial<ChatMessage>[] = [
     username: 'AnfieldRoar',
     text: 'SALAAAAHHHH!!! WHAT A GOAL!! THE KING 👑',
     timestamp: Date.now() - 1900000,
-    reactions: { '❤️': 45, '🔥': 32, '👑': 28 },
+    reactions: {
+  '❤️': { count: 45, users: [] },
+  '🔥': { count: 32, users: [] },
+  '👑': { count: 28, users: [] }
+},
     type: 'user',
   },
   {
@@ -211,7 +226,9 @@ export const SAMPLE_CHAT_MESSAGES: Partial<ChatMessage>[] = [
     username: 'NorthLondonForever',
     text: 'Defense sleeping there. Come on Arsenal wake up!',
     timestamp: Date.now() - 1800000,
-    reactions: { '😢': 12 },
+    reactions: {
+  '😢': { count: 12, users: [] }
+},
     type: 'user',
   },
   {
@@ -229,7 +246,11 @@ export const SAMPLE_CHAT_MESSAGES: Partial<ChatMessage>[] = [
     username: 'Sideline',
     text: "⚽ GOAL! Díaz scores for Liverpool! 2-0 (45+2')",
     timestamp: Date.now() - 1200000,
-    reactions: { '⚽': 134, '🔥': 78, '❤️': 56 },
+    reactions: {
+  '⚽': { count: 134, users: [] },
+  '🔥': { count: 78, users: [] },
+  '❤️': { count: 56, users: [] }
+},
     type: 'system',
   },
   {
@@ -238,7 +259,10 @@ export const SAMPLE_CHAT_MESSAGES: Partial<ChatMessage>[] = [
     username: 'LiverpoolFirst',
     text: 'DIAZ!!! Header from nowhere! 2-0 going into halftime 🔥🔥🔥',
     timestamp: Date.now() - 1100000,
-    reactions: { '🔥': 67, '❤️': 34 },
+    reactions: {
+  '🔥': { count: 67, users: [] },
+  '❤️': { count: 34, users: [] }
+},
     type: 'user',
   },
   {
@@ -247,7 +271,10 @@ export const SAMPLE_CHAT_MESSAGES: Partial<ChatMessage>[] = [
     username: 'Sideline',
     text: "⚽ GOAL! Saka scores for Arsenal! Penalty. 2-1 (56')",
     timestamp: Date.now() - 800000,
-    reactions: { '⚽': 89, '👏': 45 },
+    reactions: {
+  '⚽': { count: 89, users: [] },
+  '👏': { count: 45, users: [] }
+},
     type: 'system',
   },
   {
@@ -256,7 +283,10 @@ export const SAMPLE_CHAT_MESSAGES: Partial<ChatMessage>[] = [
     username: 'GunnerNation',
     text: 'SAKAAA!! Game on! Come on Arsenal we can do this! 💪',
     timestamp: Date.now() - 700000,
-    reactions: { '🔥': 34, '💪': 28 },
+    reactions: {
+  '🔥': { count: 34, users: [] },
+  '💪': { count: 28, users: [] }
+},
     type: 'user',
   },
   {
@@ -265,7 +295,9 @@ export const SAMPLE_CHAT_MESSAGES: Partial<ChatMessage>[] = [
     username: 'RedMenTV',
     text: 'Núñez coming on. Slot going for the kill here. Smart management.',
     timestamp: Date.now() - 500000,
-    reactions: { '👍': 23 },
+    reactions: {
+  '👍': { count: 23, users: [] }
+},
     type: 'user',
   },
 ];

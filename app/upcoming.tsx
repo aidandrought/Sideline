@@ -1,89 +1,19 @@
 // app/upcoming.tsx
-// Upcoming Matches Screen with working Notify Me functionality
+// ✅ FIXED: Uses real API data with automatic timezone conversion
 
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { addDoc, collection, deleteDoc, getDocs, query, where } from 'firebase/firestore';
 import { useEffect, useState } from 'react';
-import { Alert, RefreshControl, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Alert, Image, RefreshControl, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useAuth } from '../context/AuthContext';
 import { db } from '../firebaseConfig';
-
-interface UpcomingMatch {
-  id: string;
-  home: string;
-  away: string;
-  homeIcon: string;
-  awayIcon: string;
-  league: string;
-  kickoff: string;
-  kickoffTime: Date;
-  venue?: string;
-}
-
-// Sample upcoming matches
-const SAMPLE_MATCHES: UpcomingMatch[] = [
-  {
-    id: 'upcoming_1',
-    home: 'Manchester City',
-    away: 'Chelsea',
-    homeIcon: '🩵',
-    awayIcon: '🔵',
-    league: 'Premier League',
-    kickoff: 'Tomorrow, 3:00 PM',
-    kickoffTime: new Date(Date.now() + 24 * 60 * 60 * 1000),
-    venue: 'Etihad Stadium',
-  },
-  {
-    id: 'upcoming_2',
-    home: 'Real Madrid',
-    away: 'Barcelona',
-    homeIcon: '⚪',
-    awayIcon: '🔵🔴',
-    league: 'La Liga',
-    kickoff: 'Sunday, 9:00 PM',
-    kickoffTime: new Date(Date.now() + 48 * 60 * 60 * 1000),
-    venue: 'Santiago Bernabéu',
-  },
-  {
-    id: 'upcoming_3',
-    home: 'Bayern Munich',
-    away: 'Borussia Dortmund',
-    homeIcon: '🔴',
-    awayIcon: '🟡',
-    league: 'Bundesliga',
-    kickoff: 'Saturday, 12:30 PM',
-    kickoffTime: new Date(Date.now() + 36 * 60 * 60 * 1000),
-    venue: 'Allianz Arena',
-  },
-  {
-    id: 'upcoming_4',
-    home: 'Inter Milan',
-    away: 'AC Milan',
-    homeIcon: '🔵⚫',
-    awayIcon: '🔴⚫',
-    league: 'Serie A',
-    kickoff: 'Sunday, 2:45 PM',
-    kickoffTime: new Date(Date.now() + 60 * 60 * 60 * 1000),
-    venue: 'San Siro',
-  },
-  {
-    id: 'upcoming_5',
-    home: 'PSG',
-    away: 'Marseille',
-    homeIcon: '🔵🔴',
-    awayIcon: '⚪',
-    league: 'Ligue 1',
-    kickoff: 'Sunday, 8:45 PM',
-    kickoffTime: new Date(Date.now() + 72 * 60 * 60 * 1000),
-    venue: 'Parc des Princes',
-  },
-];
+import { footballAPI, Match } from '../services/footballApi';
 
 export default function UpcomingScreen() {
   const router = useRouter();
   const { userProfile } = useAuth();
-  const [matches, setMatches] = useState<UpcomingMatch[]>([]);
+  const [matches, setMatches] = useState<Match[]>([]);
   const [refreshing, setRefreshing] = useState(false);
   const [loading, setLoading] = useState(true);
   const [subscribedMatches, setSubscribedMatches] = useState<Set<string>>(new Set());
@@ -99,162 +29,180 @@ export default function UpcomingScreen() {
     }
   }, [userProfile]);
 
+  // ✅ FIXED: Actually load from API instead of sample data
   const loadMatches = async () => {
     try {
-      setMatches(SAMPLE_MATCHES);
+      setLoading(true);
+      const upcomingMatches = await footballAPI.getUpcomingMatches();
+      console.log('Loaded upcoming matches:', upcomingMatches.length);
+      setMatches(upcomingMatches);
     } catch (error) {
       console.error('Error loading matches:', error);
+      Alert.alert('Error', 'Failed to load upcoming matches');
     } finally {
       setLoading(false);
     }
   };
 
-  /**
-   * Load user's match notification subscriptions from Firestore
-   */
   const loadSubscriptions = async () => {
     if (!userProfile?.uid) return;
-    
+
     try {
       const q = query(
         collection(db, 'matchNotifications'),
         where('userId', '==', userProfile.uid)
       );
       const snapshot = await getDocs(q);
-      
       const subscribed = new Set<string>();
       snapshot.forEach((doc) => {
-        const data = doc.data();
-        subscribed.add(data.matchId);
+        subscribed.add(doc.data().matchId);
       });
-      
       setSubscribedMatches(subscribed);
     } catch (error) {
       console.error('Error loading subscriptions:', error);
     }
   };
 
-  /**
-   * Toggle notification subscription for a match
-   */
-  const toggleNotification = async (match: UpcomingMatch) => {
+  const onRefresh = async () => {
+    setRefreshing(true);
+    await loadMatches();
+    await loadSubscriptions();
+    setRefreshing(false);
+  };
+
+  const handleNotifyMe = async (matchId: string) => {
     if (!userProfile?.uid) {
-      Alert.alert('Sign In Required', 'Please sign in to receive match notifications.');
+      Alert.alert('Sign In Required', 'Please sign in to receive notifications');
       return;
     }
 
-    setLoadingNotify(match.id);
-    const isCurrentlySubscribed = subscribedMatches.has(match.id);
+    setLoadingNotify(matchId);
 
     try {
-      if (isCurrentlySubscribed) {
+      const isSubscribed = subscribedMatches.has(matchId);
+
+      if (isSubscribed) {
         // Unsubscribe
         const q = query(
           collection(db, 'matchNotifications'),
           where('userId', '==', userProfile.uid),
-          where('matchId', '==', match.id)
+          where('matchId', '==', matchId)
         );
         const snapshot = await getDocs(q);
-        
-        const deletePromises = snapshot.docs.map((doc) => deleteDoc(doc.ref));
-        await Promise.all(deletePromises);
-
-        setSubscribedMatches((prev) => {
-          const updated = new Set(prev);
-          updated.delete(match.id);
-          return updated;
+        snapshot.forEach(async (doc) => {
+          await deleteDoc(doc.ref);
         });
 
-        Alert.alert(
-          'Notification Removed',
-          `You will no longer be notified when ${match.home} vs ${match.away} goes live.`
-        );
+        setSubscribedMatches((prev) => {
+          const newSet = new Set(prev);
+          newSet.delete(matchId);
+          return newSet;
+        });
       } else {
         // Subscribe
         await addDoc(collection(db, 'matchNotifications'), {
-          matchId: match.id,
           userId: userProfile.uid,
-          homeTeam: match.home,
-          awayTeam: match.away,
-          league: match.league,
-          kickoffTime: match.kickoffTime,
-          createdAt: new Date(),
-          notified: false,
+          matchId,
+          createdAt: new Date().toISOString(),
         });
 
-        setSubscribedMatches((prev) => {
-          const updated = new Set(prev);
-          updated.add(match.id);
-          return updated;
-        });
-
-        Alert.alert(
-          'Notification Set! 🔔',
-          `You'll be notified when ${match.home} vs ${match.away} goes live.`
-        );
+        setSubscribedMatches((prev) => new Set(prev).add(matchId));
       }
     } catch (error) {
-      console.error('Error toggling notification:', error);
-      Alert.alert('Error', 'Failed to update notification. Please try again.');
+      console.error('Error updating notification:', error);
+      Alert.alert('Error', 'Failed to update notification preference');
     } finally {
       setLoadingNotify(null);
     }
   };
 
-  const onRefresh = async () => {
-    setRefreshing(true);
-    await loadMatches();
-    if (userProfile?.uid) {
-      await loadSubscriptions();
+  // ✅ FIXED: Format time with automatic timezone
+  const formatMatchTime = (match: Match) => {
+    const date = new Date(match.date);
+    const now = new Date();
+    const tomorrow = new Date(now);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    
+    // Check if today
+    const isToday = date.toDateString() === now.toDateString();
+    const isTomorrow = date.toDateString() === tomorrow.toDateString();
+    
+    // Get day name for dates beyond tomorrow
+    const dayName = date.toLocaleDateString('en-US', { weekday: 'long' });
+    
+    // Get time in user's local timezone
+    const time = date.toLocaleTimeString('en-US', {
+      hour: 'numeric',
+      minute: '2-digit',
+    });
+    
+    if (isToday) {
+      return `Today, ${time}`;
+    } else if (isTomorrow) {
+      return `Tomorrow, ${time}`;
+    } else {
+      return `${dayName}, ${time}`;
     }
-    setRefreshing(false);
   };
 
-  const renderMatchCard = (match: UpcomingMatch) => {
-    const isSubscribed = subscribedMatches.has(match.id);
-    const isLoading = loadingNotify === match.id;
+  const renderMatchCard = (match: Match) => {
+    const isSubscribed = subscribedMatches.has(match.id.toString());
+    const isLoading = loadingNotify === match.id.toString();
 
     return (
       <View key={match.id} style={styles.matchCard}>
         {/* League Header */}
-        <View style={styles.leagueHeader}>
-          <Text style={styles.leagueName}>{match.league}</Text>
-          <Text style={styles.kickoffTime}>{match.kickoff}</Text>
+        <View style={styles.matchHeader}>
+          <Text style={styles.leagueName}>{match.league.toUpperCase()}</Text>
+          <Text style={styles.matchTime}>{formatMatchTime(match)}</Text>
         </View>
 
         {/* Teams */}
         <View style={styles.teamsContainer}>
+          {/* Home Team */}
           <View style={styles.team}>
-            <Text style={styles.teamIcon}>{match.homeIcon}</Text>
-            <Text style={styles.teamName} numberOfLines={1}>{match.home}</Text>
-          </View>
-          
-          <View style={styles.vsContainer}>
-            <Text style={styles.vsText}>VS</Text>
+            {match.homeLogo ? (
+              <Image source={{ uri: match.homeLogo }} style={styles.teamLogo} />
+            ) : (
+              <View style={[styles.teamLogo, styles.teamLogoPlaceholder]}>
+                <Text style={styles.teamLogoText}>{match.home[0]}</Text>
+              </View>
+            )}
+            <Text style={styles.teamName} numberOfLines={1}>
+              {match.home}
+            </Text>
           </View>
 
+          <Text style={styles.vsText}>vs</Text>
+
+          {/* Away Team */}
           <View style={styles.team}>
-            <Text style={styles.teamIcon}>{match.awayIcon}</Text>
-            <Text style={styles.teamName} numberOfLines={1}>{match.away}</Text>
+            {match.awayLogo ? (
+              <Image source={{ uri: match.awayLogo }} style={styles.teamLogo} />
+            ) : (
+              <View style={[styles.teamLogo, styles.teamLogoPlaceholder]}>
+                <Text style={styles.teamLogoText}>{match.away[0]}</Text>
+              </View>
+            )}
+            <Text style={styles.teamName} numberOfLines={1}>
+              {match.away}
+            </Text>
           </View>
         </View>
 
         {/* Venue */}
-        {match.venue && (
+        {match.league && (
           <View style={styles.venueContainer}>
-            <Ionicons name="location-outline" size={14} color="#8E8E93" />
-            <Text style={styles.venueText}>{match.venue}</Text>
+            <Ionicons name="location-outline" size={14} color="#999" />
+            <Text style={styles.venueText}>{match.league}</Text>
           </View>
         )}
 
-        {/* Actions */}
+        {/* Action Buttons */}
         <View style={styles.actionsContainer}>
           <TouchableOpacity
-            style={[
-              styles.notifyButton,
-              isSubscribed && styles.notifyButtonActive,
-            ]}
-            onPress={() => toggleNotification(match)}
+            style={[styles.notifyButton, isSubscribed && styles.notifyButtonActive]}
+            onPress={() => handleNotifyMe(match.id.toString())}
             disabled={isLoading}
           >
             <Ionicons
@@ -310,6 +258,9 @@ export default function UpcomingScreen() {
           <View style={styles.emptyState}>
             <Ionicons name="calendar-outline" size={64} color="#E5E7EB" />
             <Text style={styles.emptyText}>No upcoming matches</Text>
+            <Text style={styles.emptySubtext}>
+              Check back soon for scheduled matches
+            </Text>
           </View>
         ) : (
           <>
@@ -321,6 +272,7 @@ export default function UpcomingScreen() {
               </Text>
             </View>
 
+            {/* Matches List */}
             {matches.map((match) => renderMatchCard(match))}
           </>
         )}
@@ -354,7 +306,6 @@ const styles = StyleSheet.create({
   },
   content: {
     flex: 1,
-    padding: 16,
   },
   loadingContainer: {
     alignItems: 'center',
@@ -362,57 +313,66 @@ const styles = StyleSheet.create({
   },
   loadingText: {
     fontSize: 16,
-    color: '#8E8E93',
+    color: '#999',
   },
   emptyState: {
     alignItems: 'center',
-    paddingTop: 80,
+    paddingTop: 100,
+    paddingHorizontal: 40,
   },
   emptyText: {
-    fontSize: 18,
-    color: '#8E8E93',
-    marginTop: 16,
+    fontSize: 20,
+    fontWeight: '700',
+    color: '#999',
+    marginTop: 20,
+  },
+  emptySubtext: {
+    fontSize: 15,
+    color: '#999',
+    marginTop: 8,
+    textAlign: 'center',
   },
   infoBanner: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'rgba(0,102,204,0.1)',
-    padding: 14,
+    backgroundColor: '#E3F2FD',
+    padding: 16,
+    marginHorizontal: 16,
+    marginTop: 16,
+    marginBottom: 8,
     borderRadius: 12,
-    marginBottom: 16,
-    gap: 10,
   },
   infoBannerText: {
-    flex: 1,
     fontSize: 14,
     color: '#0066CC',
-    lineHeight: 20,
+    marginLeft: 10,
+    flex: 1,
   },
   matchCard: {
     backgroundColor: '#FFFFFF',
+    marginHorizontal: 16,
+    marginTop: 12,
     borderRadius: 16,
-    padding: 16,
-    marginBottom: 12,
+    padding: 20,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.06,
+    shadowOpacity: 0.08,
     shadowRadius: 8,
-    elevation: 2,
+    elevation: 3,
   },
-  leagueHeader: {
+  matchHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: 16,
   },
   leagueName: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#8E8E93',
-    textTransform: 'uppercase',
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#666',
     letterSpacing: 0.5,
   },
-  kickoffTime: {
+  matchTime: {
     fontSize: 13,
     fontWeight: '600',
     color: '#0066CC',
@@ -427,75 +387,86 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: 'center',
   },
-  teamIcon: {
-    fontSize: 40,
+  teamLogo: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
     marginBottom: 8,
+  },
+  teamLogoPlaceholder: {
+    backgroundColor: '#F0F0F0',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  teamLogoText: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: '#999',
   },
   teamName: {
     fontSize: 15,
-    fontWeight: '700',
+    fontWeight: '600',
     color: '#000',
     textAlign: 'center',
   },
-  vsContainer: {
-    width: 50,
-    alignItems: 'center',
-  },
   vsText: {
     fontSize: 14,
-    fontWeight: '800',
-    color: '#8E8E93',
+    fontWeight: '600',
+    color: '#999',
+    marginHorizontal: 12,
   },
   venueContainer: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 6,
     marginBottom: 16,
-    paddingTop: 12,
-    borderTopWidth: 1,
-    borderTopColor: '#F5F5F7',
   },
   venueText: {
     fontSize: 13,
-    color: '#8E8E93',
+    color: '#999',
+    marginLeft: 4,
   },
   actionsContainer: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingTop: 12,
-    borderTopWidth: 1,
-    borderTopColor: '#F5F5F7',
+    gap: 12,
   },
   notifyButton: {
+    flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#F5F5F7',
-    paddingVertical: 10,
-    paddingHorizontal: 16,
-    borderRadius: 10,
-    gap: 8,
+    justifyContent: 'center',
+    paddingVertical: 12,
+    borderRadius: 12,
+    backgroundColor: '#F0F7FF',
+    borderWidth: 1,
+    borderColor: '#0066CC',
   },
   notifyButtonActive: {
     backgroundColor: '#0066CC',
+    borderColor: '#0066CC',
   },
   notifyButtonText: {
     fontSize: 14,
-    fontWeight: '700',
+    fontWeight: '600',
     color: '#0066CC',
+    marginLeft: 6,
   },
   notifyButtonTextActive: {
     color: '#FFF',
   },
   previewButton: {
+    flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
+    justifyContent: 'center',
+    paddingVertical: 12,
+    borderRadius: 12,
+    backgroundColor: '#F5F5F7',
   },
   previewButtonText: {
     fontSize: 14,
     fontWeight: '600',
     color: '#0066CC',
+    marginRight: 4,
   },
 });
