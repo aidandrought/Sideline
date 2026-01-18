@@ -3,11 +3,12 @@
 
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
+import { onAuthStateChanged } from 'firebase/auth';
 import { addDoc, collection, deleteDoc, getDocs, query, where } from 'firebase/firestore';
 import { useEffect, useState } from 'react';
 import { Alert, Image, RefreshControl, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useAuth } from '../context/AuthContext';
-import { db } from '../firebaseConfig';
+import { auth, db } from '../firebaseConfig';
 import { footballAPI, Match } from '../services/footballApi';
 
 export default function UpcomingScreen() {
@@ -22,12 +23,21 @@ export default function UpcomingScreen() {
   useEffect(() => {
     loadMatches();
   }, []);
-
+  
   useEffect(() => {
-    if (userProfile?.uid) {
-      loadSubscriptions();
+  const unsub = onAuthStateChanged(auth, (user) => {
+    if (!user) {
+      console.log('Auth not ready yet');
+      return;
     }
-  }, [userProfile]);
+
+    console.log('Auth ready, uid:', user.uid);
+    loadSubscriptions(user.uid);
+  });
+
+  return unsub;
+}, []);
+
 
   // ✅ FIXED: Actually load from API instead of sample data
   const loadMatches = async () => {
@@ -44,13 +54,13 @@ export default function UpcomingScreen() {
     }
   };
 
-  const loadSubscriptions = async () => {
-    if (!userProfile?.uid) return;
+    const loadSubscriptions = async (uid: string) => {
+
 
     try {
       const q = query(
         collection(db, 'matchNotifications'),
-        where('userId', '==', userProfile.uid)
+        where('userId', '==', uid)
       );
       const snapshot = await getDocs(q);
       const subscribed = new Set<string>();
@@ -64,11 +74,16 @@ export default function UpcomingScreen() {
   };
 
   const onRefresh = async () => {
-    setRefreshing(true);
-    await loadMatches();
-    await loadSubscriptions();
-    setRefreshing(false);
-  };
+  setRefreshing(true);
+  await loadMatches();
+
+  const uid = auth.currentUser?.uid;
+  if (uid) {
+    await loadSubscriptions(uid);
+  }
+
+  setRefreshing(false);
+};
 
   const handleNotifyMe = async (matchId: string) => {
     if (!userProfile?.uid) {
@@ -162,10 +177,13 @@ export default function UpcomingScreen() {
           {/* Home Team */}
           <View style={styles.team}>
             {match.homeLogo ? (
-              <Image source={{ uri: match.homeLogo }} style={styles.teamLogo} />
+              <Image source={{ uri: match.homeLogo }} 
+              style={styles.teamIcon} 
+              resizeMode="contain"
+              />
             ) : (
-              <View style={[styles.teamLogo, styles.teamLogoPlaceholder]}>
-                <Text style={styles.teamLogoText}>{match.home[0]}</Text>
+              <View style={[styles.teamIcon, styles.teamIconPlaceholder]}>
+                <Text style={styles.teamIconText}>{match.home[0]}</Text>
               </View>
             )}
             <Text style={styles.teamName} numberOfLines={1}>
@@ -178,10 +196,10 @@ export default function UpcomingScreen() {
           {/* Away Team */}
           <View style={styles.team}>
             {match.awayLogo ? (
-              <Image source={{ uri: match.awayLogo }} style={styles.teamLogo} />
+              <Image source={{ uri: match.awayLogo }} style={styles.teamIcon} resizeMode="contain" />
             ) : (
-              <View style={[styles.teamLogo, styles.teamLogoPlaceholder]}>
-                <Text style={styles.teamLogoText}>{match.away[0]}</Text>
+              <View style={[styles.teamIcon, styles.teamIconPlaceholder]}>
+                <Text style={styles.teamIconText}>{match.away[0]}</Text>
               </View>
             )}
             <Text style={styles.teamName} numberOfLines={1}>
@@ -293,7 +311,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingHorizontal: 16,
-    paddingTop: 60,
+    paddingTop: 70,
     paddingBottom: 16,
     backgroundColor: '#FFFFFF',
     borderBottomWidth: 1,
@@ -387,18 +405,19 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: 'center',
   },
-  teamLogo: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    marginBottom: 8,
-  },
-  teamLogoPlaceholder: {
-    backgroundColor: '#F0F0F0',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  teamLogoText: {
+teamIcon: {
+  width: 60,
+  height: 60,
+  marginBottom: 8,
+},
+teamIconPlaceholder: {
+  width: 60,
+  height: 60,
+  backgroundColor: '#E5E7EB',
+  borderRadius: 30,
+  marginBottom: 8,
+},
+  teamIconText: {
     fontSize: 20,
     fontWeight: '700',
     color: '#999',

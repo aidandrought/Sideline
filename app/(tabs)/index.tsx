@@ -19,8 +19,10 @@ interface LiveMatch {
   id: string;
   home: string;
   away: string;
-  homeIcon: string;
-  awayIcon: string;
+  homeIcon?: string;
+  awayIcon?: string;
+  homeLogo?: string;
+  awayLogo?: string;
   score: string;
   minute: string;
   league: string;
@@ -31,8 +33,10 @@ interface UpcomingMatch {
   id: string;
   home: string;
   away: string;
-  homeIcon: string;
-  awayIcon: string;
+  homeIcon?: string;  // ← Add ?
+  awayIcon?: string;  // ← Add ?
+  homeLogo?: string;
+  awayLogo?: string;
   league: string;
   kickoff: string;
   kickoffFull: string;
@@ -173,79 +177,59 @@ export default function HomeScreen() {
     }
   }, [userProfile]);
 
- const loadData = async () => {
+const loadData = async () => {
   try {
-    const now = new Date();
-
-    // Get matches from API
-    const upcomingFromAPI = await footballAPI.getUpcomingMatches();
-
-    const live: LiveMatch[] = [];
-    const upcoming: UpcomingMatch[] = [];
-
-    // Separate live vs upcoming
-    upcomingFromAPI.forEach((match) => {
-      const kickoffTime = new Date(match.date);
-
-      if (kickoffTime <= now) {
-        // Live match
-        live.push({
-          id: match.id.toString(),
-          home: match.home,
-          away: match.away,
-          homeIcon: '⚪',
-          awayIcon: '⚪',
-          score: match.score || '0-0',
-          minute: match.minute || "0'",
-          league: match.league,
-          activeUsers: '0',
-        });
-      } else {
-        // Upcoming
-        upcoming.push({
-          id: match.id.toString(),
-          home: match.home,
-          away: match.away,
-          homeIcon: '⚪',
-          awayIcon: '⚪',
-          league: match.league,
-          kickoff: formatKickoffTime(match.date),
-          kickoffFull: new Date(match.date).toLocaleString('en-US', {
-            weekday: 'long',
-            month: 'short',
-            day: 'numeric',
-            hour: 'numeric',
-            minute: '2-digit',
-          }),
-          kickoffTime,
-          venue: match.league,
-        });
-      }
-    });
-
-    // ✅ Add the hardcoded test match
-    live.push(TEST_LIVE_MATCH);
-
-    // Sort by activeUsers
+    // Load real data from API
+    const liveData = await footballAPI.getLiveMatches();
+    const upcomingData = await footballAPI.getUpcomingMatches();
+    
+    // Use real data if available, fallback to samples
+    let live = liveData.length > 0 ? liveData.map(m => ({
+      id: m.id.toString(),
+      home: m.home,
+      away: m.away,
+      homeIcon: m.homeLogo,
+      awayIcon: m.awayLogo,
+      homeLogo: m.homeLogo,
+      awayLogo: m.awayLogo,
+      score: m.score || '0-0',
+      minute: m.minute || "0'",
+      league: m.league,
+      activeUsers: `${(m.activeUsers || 0) / 1000}K`
+    })) : [TEST_LIVE_MATCH];
+    
+    // Sort by active users
     live.sort((a, b) => {
       const parseUsers = (s: string) => parseFloat(s.replace('K','')) * 1000;
       return parseUsers(b.activeUsers || '0') - parseUsers(a.activeUsers || '0');
     });
-
-    // Update state
-    setLiveMatches(live.slice(0, 8));
-    setUpcomingMatches(upcoming.slice(0, 8));
-
-    // Load news
+    
+    setLiveMatches(live);
+    
+    setUpcomingMatches(upcomingData.length > 0 ? upcomingData.map(m => ({
+      id: m.id.toString(),
+      home: m.home,
+      away: m.away,
+      homeIcon: m.homeLogo,
+      awayIcon: m.awayLogo,
+      homeLogo: m.homeLogo,
+      awayLogo: m.awayLogo,
+      league: m.league,
+      kickoff: m.time || 'TBD',
+      kickoffFull: new Date(m.date).toLocaleString(),
+      kickoffTime: new Date(m.date),
+      venue: 'Stadium TBD'
+    })) : SAMPLE_UPCOMING);
+    
     const newsData = await newsAPI.getSoccerNews();
-    setNews(newsData.slice(0, 12));
-
+    setNews(newsData.slice(0, 6));
   } catch (error) {
     console.error('Error loading data:', error);
+    // Fallback to sample data on error
+    setLiveMatches([TEST_LIVE_MATCH]);
+    setUpcomingMatches(SAMPLE_UPCOMING);
   }
 };
-
-
 
 // Helper function - add this BEFORE the loadData function
 const formatKickoffTime = (dateString: string): string => {
@@ -384,17 +368,33 @@ const formatKickoffTime = (dateString: string): string => {
 
       <View style={styles.liveMatchTeams}>
         <View style={styles.liveTeam}>
-          <Text style={styles.liveTeamIcon}>{match.homeIcon}</Text>
-          <Text style={styles.liveTeamName} numberOfLines={1}>{match.home}</Text>
-        </View>
+  {match.homeLogo ? (
+    <Image 
+      source={{ uri: match.homeLogo }} 
+      style={styles.liveTeamLogo}
+      resizeMode="contain"
+    />
+  ) : (
+    <View style={styles.liveTeamLogoPlaceholder} />
+  )}
+  <Text style={styles.liveTeamName} numberOfLines={1}>{match.home}</Text>
+</View>
         <View style={styles.liveScoreContainer}>
           <Text style={styles.liveScore}>{match.score}</Text>
           <Text style={styles.liveMinute}>{match.minute}</Text>
         </View>
         <View style={styles.liveTeam}>
-          <Text style={styles.liveTeamIcon}>{match.awayIcon}</Text>
-          <Text style={styles.liveTeamName} numberOfLines={1}>{match.away}</Text>
-        </View>
+  {match.awayLogo ? (
+    <Image 
+      source={{ uri: match.awayLogo }} 
+      style={styles.liveTeamLogo}
+      resizeMode="contain"
+    />
+  ) : (
+    <View style={styles.liveTeamLogoPlaceholder} />
+  )}
+  <Text style={styles.liveTeamName} numberOfLines={1}>{match.away}</Text>
+</View>
       </View>
 
       <View style={styles.joinChatRow}>
@@ -406,55 +406,72 @@ const formatKickoffTime = (dateString: string): string => {
   );
 
   // Upcoming match card
-  const renderUpcomingMatch = (match: UpcomingMatch) => {
-    const isSubscribed = subscribedMatches.has(match.id);
-    const isLoading = loadingNotify === match.id;
-    
-    return (
-      <TouchableOpacity 
-        key={match.id} 
-        style={styles.upcomingCard}
-        onPress={() => router.push(`/matchPreview/${match.id}` as any)}
-        activeOpacity={0.7}
-      >
-        <View style={styles.upcomingHeader}>
-          <Text style={styles.upcomingLeague} numberOfLines={1}>{match.league}</Text>
+// Upcoming match card
+const renderUpcomingMatch = (match: UpcomingMatch) => {
+  const isSubscribed = subscribedMatches.has(match.id);
+  const isLoading = loadingNotify === match.id;
+  
+  return (
+    <TouchableOpacity 
+      key={match.id} 
+      style={styles.upcomingCard}
+      onPress={() => router.push(`/matchPreview/${match.id}` as any)}
+      activeOpacity={0.7}
+    >
+      <View style={styles.upcomingHeader}>
+        <Text style={styles.upcomingLeague} numberOfLines={1}>{match.league}</Text>
+      </View>
+      
+      <Text style={styles.upcomingKickoff}>{match.kickoff}</Text>
+      
+      <View style={styles.upcomingTeams}>
+        <View style={styles.upcomingTeam}>
+          {match.homeLogo ? (
+            <Image 
+              source={{ uri: match.homeLogo }} 
+              style={styles.upcomingTeamLogo}
+              resizeMode="contain"
+            />
+          ) : (
+            <View style={styles.upcomingTeamLogoPlaceholder} />
+          )}
+          <Text style={styles.upcomingTeamName} numberOfLines={1}>{match.home}</Text>
         </View>
-        
-        <Text style={styles.upcomingKickoff}>{match.kickoff}</Text>
-        
-        <View style={styles.upcomingTeams}>
-          <View style={styles.upcomingTeam}>
-            <Text style={styles.upcomingTeamIcon}>{match.homeIcon}</Text>
-            <Text style={styles.upcomingTeamName} numberOfLines={1}>{match.home}</Text>
-          </View>
-          <Text style={styles.upcomingVs}>vs</Text>
-          <View style={styles.upcomingTeam}>
-            <Text style={styles.upcomingTeamIcon}>{match.awayIcon}</Text>
-            <Text style={styles.upcomingTeamName} numberOfLines={1}>{match.away}</Text>
-          </View>
+        <Text style={styles.upcomingVs}>vs</Text>
+        <View style={styles.upcomingTeam}>
+          {match.awayLogo ? (
+            <Image 
+              source={{ uri: match.awayLogo }} 
+              style={styles.upcomingTeamLogo}
+              resizeMode="contain"
+            />
+          ) : (
+            <View style={styles.upcomingTeamLogoPlaceholder} />
+          )}
+          <Text style={styles.upcomingTeamName} numberOfLines={1}>{match.away}</Text>
         </View>
+      </View>
 
-        <TouchableOpacity
-          style={[styles.notifyButton, isSubscribed && styles.notifyButtonActive]}
-          onPress={(e) => {
-            e.stopPropagation();
-            toggleNotification(match);
-          }}
-          disabled={isLoading}
-        >
-          <Ionicons
-            name={isSubscribed ? 'notifications' : 'notifications-outline'}
-            size={13}
-            color={isSubscribed ? '#FFF' : '#0066CC'}
-          />
-          <Text style={[styles.notifyButtonText, isSubscribed && styles.notifyButtonTextActive]}>
-            {isLoading ? '...' : isSubscribed ? 'Notifying' : 'Notify Me'}
-          </Text>
-        </TouchableOpacity>
+      <TouchableOpacity
+        style={[styles.notifyButton, isSubscribed && styles.notifyButtonActive]}
+        onPress={(e) => {
+          e.stopPropagation();
+          toggleNotification(match);
+        }}
+        disabled={isLoading}
+      >
+        <Ionicons
+          name={isSubscribed ? 'notifications' : 'notifications-outline'}
+          size={13}
+          color={isSubscribed ? '#FFF' : '#0066CC'}
+        />
+        <Text style={[styles.notifyButtonText, isSubscribed && styles.notifyButtonTextActive]}>
+          {isLoading ? '...' : isSubscribed ? 'Notifying' : 'Notify Me'}
+        </Text>
       </TouchableOpacity>
-    );
-  };
+    </TouchableOpacity>
+  );
+};
 
   // News hero card - FULL IMAGE with gradient overlay (PL App Style)
   const renderHeroNews = (article: NewsArticle) => (
@@ -598,7 +615,7 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     paddingHorizontal: 20,
-    paddingTop: 60,
+    paddingTop: 70,
     paddingBottom: 15,
     backgroundColor: '#FFFFFF',
   },
@@ -720,10 +737,6 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: 'center',
   },
-  liveTeamIcon: {
-    fontSize: 26,
-    marginBottom: 4,
-  },
   liveTeamName: {
     fontSize: 10,
     fontWeight: '700',
@@ -759,6 +772,18 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: '#0066CC',
   },
+upcomingTeamLogo: {
+  width: 32,
+  height: 32,
+  marginBottom: 6,
+},
+upcomingTeamLogoPlaceholder: {
+  width: 32,
+  height: 32,
+  borderRadius: 16,
+  backgroundColor: '#E5E7EB',
+  marginBottom: 6,
+},
 
   // Upcoming Cards
   upcomingCard: {
@@ -799,10 +824,6 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: 'center',
   },
-  upcomingTeamIcon: {
-    fontSize: 22,
-    marginBottom: 4,
-  },
   upcomingTeamName: {
     fontSize: 10,
     fontWeight: '700',
@@ -835,6 +856,18 @@ const styles = StyleSheet.create({
   notifyButtonTextActive: {
     color: '#FFF',
   },
+  liveTeamLogo: {
+  width: 40,
+  height: 40,
+  marginBottom: 6,
+},
+liveTeamLogoPlaceholder: {
+  width: 40,
+  height: 40,
+  borderRadius: 20,
+  backgroundColor: '#2C2C2E',
+  marginBottom: 6,
+},
 
   // News Section
   newsContainer: {
