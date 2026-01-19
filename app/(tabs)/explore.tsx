@@ -1,67 +1,211 @@
+// app/(tabs)/explore.tsx
+// IMPROVED: League browsing, team directory, better search
+
 import { Ionicons } from '@expo/vector-icons';
-import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
-import { Image, Modal, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import {
+  ActivityIndicator,
+  Image,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View
+} from 'react-native';
+import { Community, communityService } from '../../services/communityService';
 import { footballAPI, Match } from '../../services/footballApi';
 import { newsAPI, NewsArticle } from '../../services/newsApi';
 
-type FilterCategory = 'All' | 'Matches' | 'News' | 'Live' | 'Upcoming';
-
 export default function ExploreScreen() {
   const router = useRouter();
-  const params = useLocalSearchParams();
+  
   const [searchQuery, setSearchQuery] = useState('');
-  const [selectedCategory, setSelectedCategory] = useState<FilterCategory>('All');
-  const [showFilterModal, setShowFilterModal] = useState(false);
-  const [searchResults, setSearchResults] = useState<(Match | NewsArticle)[]>([]);
-  const [loading, setLoading] = useState(false);
+  const [searching, setSearching] = useState(false);
+  const [searchResults, setSearchResults] = useState<{
+    teams: Community[];
+    leagues: Community[];
+    matches: Match[];
+    news: NewsArticle[];
+  }>({ teams: [], leagues: [], matches: [], news: [] });
+  
+  const [leagues, setLeagues] = useState<Community[]>([]);
+  const [popularTeams, setPopularTeams] = useState<Community[]>([]);
+  const [loading, setLoading] = useState(true);
 
-  const categories: FilterCategory[] = ['All', 'Matches', 'News', 'Live', 'Upcoming'];
-
-  const leagues = [
-    { id: 'premier', name: 'Premier League', icon: '🏴󠁧󠁢󠁥󠁮󠁧󠁿' },
-    { id: 'laliga', name: 'La Liga', icon: '🇪🇸' },
-    { id: 'bundesliga', name: 'Bundesliga', icon: '🇩🇪' },
-    { id: 'seriea', name: 'Serie A', icon: '🇮🇹' },
-    { id: 'ligue1', name: 'Ligue 1', icon: '🇫🇷' },
-    { id: 'ucl', name: 'Champions League', icon: '⭐' },
-  ];
-
-  // Handle search from home screen
   useEffect(() => {
-    if (params.query && typeof params.query === 'string') {
-      setSearchQuery(params.query);
-      performSearch(params.query);
-    }
-  }, [params.query]);
+    loadExplorePage();
+  }, []);
 
-  const performSearch = async (query: string) => {
-    if (!query.trim()) return;
-
-    setLoading(true);
+  const loadExplorePage = async () => {
     try {
-      if (selectedCategory === 'News' || selectedCategory === 'All') {
-        const newsResults = await newsAPI.searchNews(query);
-        setSearchResults(newsResults);
-      } else {
-        const matches = await footballAPI.getLiveMatches();
-        const filtered = matches.filter(m =>
-          m.home.toLowerCase().includes(query.toLowerCase()) ||
-          m.away.toLowerCase().includes(query.toLowerCase()) ||
-          m.league.toLowerCase().includes(query.toLowerCase())
-        );
-        setSearchResults(filtered);
-      }
+      setLoading(true);
+      const allCommunities = await communityService.getAllCommunities();
+      
+      // Get leagues
+      const leagueList = allCommunities.filter(c => c.type === 'league');
+      setLeagues(leagueList);
+      
+      // Get popular teams (from major leagues)
+      const popularLeagues = ['Premier League', 'La Liga', 'Serie A', 'Bundesliga', 'Ligue 1'];
+      const popularTeamsList = allCommunities.filter(c => 
+        c.type === 'team' && c.league && popularLeagues.includes(c.league)
+      ).slice(0, 12);
+      setPopularTeams(popularTeamsList);
+      
     } catch (error) {
-      console.error('Search error:', error);
+      console.error('Error loading explore page:', error);
     } finally {
       setLoading(false);
     }
   };
 
-  const handleSearch = () => {
-    performSearch(searchQuery);
+  const handleSearch = async (query: string) => {
+    setSearchQuery(query);
+    
+    if (query.trim().length < 2) {
+      setSearchResults({ teams: [], leagues: [], matches: [], news: [] });
+      return;
+    }
+    
+    setSearching(true);
+    try {
+      // Search teams and leagues
+      const communities = await communityService.searchCommunities(query);
+      const teams = communities.filter(c => c.type === 'team');
+      const leagueResults = communities.filter(c => c.type === 'league');
+      
+      // Search matches
+      const liveMatches = await footballAPI.getLiveMatches();
+      const upcomingMatches = await footballAPI.getUpcomingMatches();
+      const allMatches = [...liveMatches, ...upcomingMatches];
+      const matchResults = allMatches.filter(m =>
+        m.home.toLowerCase().includes(query.toLowerCase()) ||
+        m.away.toLowerCase().includes(query.toLowerCase()) ||
+        m.league.toLowerCase().includes(query.toLowerCase())
+      ).slice(0, 5);
+      
+      // Search news
+      const newsResults = await newsAPI.searchNews(query);
+      
+      setSearchResults({
+        teams,
+        leagues: leagueResults,
+        matches: matchResults,
+        news: newsResults.slice(0, 5)
+      });
+    } catch (error) {
+      console.error('Error searching:', error);
+    } finally {
+      setSearching(false);
+    }
   };
+
+  const renderLeagueCard = (league: Community) => (
+    <TouchableOpacity
+      key={league.id}
+      style={styles.leagueCard}
+      onPress={() => router.push(`/leagueCommunity/${league.id}` as any)}
+    >
+      {league.logo ? (
+        <Image source={{ uri: league.logo }} style={styles.leagueLogo} resizeMode="contain" />
+      ) : (
+        <View style={styles.leagueLogoPlaceholder}>
+          <Ionicons name="trophy" size={24} color="#0066CC" />
+        </View>
+      )}
+      <Text style={styles.leagueName} numberOfLines={2}>{league.name}</Text>
+      {league.country && (
+        <Text style={styles.leagueCountry}>{league.country}</Text>
+      )}
+    </TouchableOpacity>
+  );
+
+  const renderTeamCard = (team: Community) => (
+    <TouchableOpacity
+      key={team.id}
+      style={styles.teamCard}
+      onPress={() => router.push(`/teamCommunity/${team.id}` as any)}
+    >
+      {team.logo ? (
+        <Image source={{ uri: team.logo }} style={styles.teamLogo} resizeMode="contain" />
+      ) : (
+        <View style={styles.teamLogoPlaceholder}>
+          <Ionicons name="shield" size={20} color="#0066CC" />
+        </View>
+      )}
+      <View style={styles.teamInfo}>
+        <Text style={styles.teamName} numberOfLines={1}>{team.name}</Text>
+        {team.league && (
+          <Text style={styles.teamLeague}>{team.league}</Text>
+        )}
+      </View>
+      <Ionicons name="chevron-forward" size={20} color="#CCC" />
+    </TouchableOpacity>
+  );
+
+  const renderMatchResult = (match: Match) => (
+    <TouchableOpacity
+      key={match.id}
+      style={styles.matchResult}
+      onPress={() => router.push(`/chat/${match.id}` as any)}
+    >
+      <View style={styles.matchResultHeader}>
+        <Text style={styles.matchResultLeague}>{match.league}</Text>
+        {match.status === 'live' && (
+          <View style={styles.liveBadge}>
+            <View style={styles.liveDot} />
+            <Text style={styles.liveText}>LIVE</Text>
+          </View>
+        )}
+      </View>
+      <View style={styles.matchResultTeams}>
+        <View style={styles.matchResultTeam}>
+          {match.homeLogo && (
+            <Image source={{ uri: match.homeLogo }} style={styles.matchResultLogo} resizeMode="contain" />
+          )}
+          <Text style={styles.matchResultTeamName}>{match.home}</Text>
+        </View>
+        <Text style={styles.matchResultScore}>{match.score || 'vs'}</Text>
+        <View style={styles.matchResultTeam}>
+          {match.awayLogo && (
+            <Image source={{ uri: match.awayLogo }} style={styles.matchResultLogo} resizeMode="contain" />
+          )}
+          <Text style={styles.matchResultTeamName}>{match.away}</Text>
+        </View>
+      </View>
+    </TouchableOpacity>
+  );
+
+  const renderNewsResult = (article: NewsArticle) => (
+    <TouchableOpacity
+      key={article.id}
+      style={styles.newsResult}
+      onPress={() => router.push(`/newsDetail/${article.id}` as any)}
+    >
+      {article.imageUrl && (
+        <Image source={{ uri: article.imageUrl }} style={styles.newsResultImage} resizeMode="cover" />
+      )}
+      <View style={styles.newsResultContent}>
+        <Text style={styles.newsResultTitle} numberOfLines={2}>{article.title}</Text>
+        <Text style={styles.newsResultMeta}>{article.source}</Text>
+      </View>
+    </TouchableOpacity>
+  );
+
+  if (loading) {
+    return (
+      <View style={styles.container}>
+        <View style={styles.header}>
+          <Text style={styles.title}>Explore</Text>
+        </View>
+        <View style={styles.loadingContainer}>
+          <ActivityIndicator size="large" color="#0066CC" />
+        </View>
+      </View>
+    );
+  }
 
   return (
     <View style={styles.container}>
@@ -70,229 +214,145 @@ export default function ExploreScreen() {
         <Text style={styles.title}>Explore</Text>
       </View>
 
-      {/* Search Bar with Filter */}
+      {/* Search Bar */}
       <View style={styles.searchContainer}>
-        <View style={styles.searchBar}>
-          <Ionicons name="search" size={20} color="#8E8E93" />
-          <TextInput
-            style={styles.searchInput}
-            placeholder="Search matches, teams, news..."
-            value={searchQuery}
-            onChangeText={setSearchQuery}
-            onSubmitEditing={handleSearch}
-            placeholderTextColor="#8E8E93"
-          />
-          {searchQuery.length > 0 ? (
-            <TouchableOpacity onPress={() => {
-              setSearchQuery('');
-              setSearchResults([]);
-            }}>
-              <Ionicons name="close-circle" size={20} color="#8E8E93" />
-            </TouchableOpacity>
-          ) : (
-            <TouchableOpacity onPress={() => setShowFilterModal(true)}>
-              <View style={styles.filterButton}>
-                <Ionicons name="options" size={20} color="#0066CC" />
+        <Ionicons name="search" size={20} color="#999" />
+        <TextInput
+          style={styles.searchInput}
+          placeholder="Search teams, leagues, matches..."
+          placeholderTextColor="#999"
+          value={searchQuery}
+          onChangeText={handleSearch}
+        />
+        {searchQuery.length > 0 && (
+          <TouchableOpacity onPress={() => handleSearch('')}>
+            <Ionicons name="close-circle" size={20} color="#999" />
+          </TouchableOpacity>
+        )}
+      </View>
+
+      <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
+        {searching ? (
+          <View style={styles.searchingContainer}>
+            <ActivityIndicator size="small" color="#0066CC" />
+            <Text style={styles.searchingText}>Searching...</Text>
+          </View>
+        ) : searchQuery.trim().length >= 2 ? (
+          // Search Results
+          <View style={styles.searchResults}>
+            {/* Teams Results */}
+            {searchResults.teams.length > 0 && (
+              <View style={styles.resultSection}>
+                <Text style={styles.resultSectionTitle}>Teams ({searchResults.teams.length})</Text>
+                {searchResults.teams.map(renderTeamCard)}
               </View>
-            </TouchableOpacity>
-          )}
-        </View>
-      </View>
+            )}
 
-      {/* Quick Filter Chips */}
-      <View style={styles.quickFilters}>
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={styles.quickFiltersContent}
-        >
-          {categories.map(cat => (
-            <TouchableOpacity
-              key={cat}
-              style={[
-                styles.filterChip,
-                selectedCategory === cat && styles.filterChipActive
-              ]}
-              onPress={() => setSelectedCategory(cat)}
-            >
-              <Text
-                style={[
-                  styles.filterChipText,
-                  selectedCategory === cat && styles.filterChipTextActive
-                ]}
-              >
-                {cat}
-              </Text>
-            </TouchableOpacity>
-          ))}
-        </ScrollView>
-      </View>
+            {/* Leagues Results */}
+            {searchResults.leagues.length > 0 && (
+              <View style={styles.resultSection}>
+                <Text style={styles.resultSectionTitle}>Leagues ({searchResults.leagues.length})</Text>
+                {searchResults.leagues.map(league => renderTeamCard(league))}
+              </View>
+            )}
 
-      {/* Popular Leagues Section */}
-      {searchResults.length === 0 && (
-        <View style={styles.popularLeagues}>
-          <Text style={styles.sectionTitle}>Popular Leagues</Text>
-          <View style={styles.leaguesGrid}>
-            {leagues.map(league => (
-              <TouchableOpacity
-                key={league.id}
-                style={styles.leagueCard}
-                onPress={() => {
-                  setSearchQuery(league.name);
-                  performSearch(league.name);
-                }}
-              >
-                <Text style={styles.leagueIcon}>{league.icon}</Text>
-                <Text style={styles.leagueName}>{league.name}</Text>
-              </TouchableOpacity>
-            ))}
-          </View>
-        </View>
-      )}
+            {/* Matches Results */}
+            {searchResults.matches.length > 0 && (
+              <View style={styles.resultSection}>
+                <Text style={styles.resultSectionTitle}>Matches ({searchResults.matches.length})</Text>
+                {searchResults.matches.map(renderMatchResult)}
+              </View>
+            )}
 
-      {/* Results */}
-      <ScrollView style={styles.results} showsVerticalScrollIndicator={false}>
-        {loading ? (
-          <View style={styles.loadingContainer}>
-            <Text style={styles.loadingText}>Searching...</Text>
-          </View>
-        ) : searchResults.length > 0 ? (
-          searchResults.map((item: any, index) => {
-            if ('score' in item) {
-              const match = item as Match;
-              return (
-                <TouchableOpacity
-                  key={index}
-                  style={styles.resultCard}
-                  onPress={() => router.push(`/chat/${match.id}` as any)}
-                >
-                  <View style={styles.matchResult}>
-                    <View style={styles.matchHeader}>
-                      {match.status === 'live' && (
-                        <View style={styles.liveIndicator}>
-                          <View style={styles.liveDot} />
-                          <Text style={styles.liveText}>{match.minute}</Text>
-                        </View>
-                      )}
-                      <Text style={styles.matchLeague}>{match.league}</Text>
-                    </View>
-                    <Text style={styles.matchScore}>{match.score || 'vs'}</Text>
-                    <Text style={styles.matchTeams}>
-                      {match.home} vs {match.away}
-                    </Text>
-                  </View>
-                </TouchableOpacity>
-              );
-            } else {
-              const news = item as NewsArticle;
-              return (
-                <TouchableOpacity
-                  key={index}
-                  style={styles.newsResultCard}
-                  onPress={() => router.push(`/newsDetail/${encodeURIComponent(news.id)}` as any)}
-                >
-                  <View style={styles.newsImageContainer}>
-                    {news.imageUrl ? (
-                      <Image source={{ uri: news.imageUrl }} style={styles.newsResultImage} />
-                    ) : (
-                      <View style={styles.newsImagePlaceholder}>
-                        <Ionicons name="newspaper" size={32} color="#8E8E93" />
-                      </View>
-                    )}
-                  </View>
-                  <View style={styles.newsResultContent}>
-                    <View style={styles.newsResultHeader}>
-                      <Text style={styles.newsSource}>{news.source}</Text>
-                      <Text style={styles.newsDot}>•</Text>
-                      <Text style={styles.newsTime}>
-                        {new Date(news.publishedAt).toLocaleDateString()}
-                      </Text>
-                    </View>
-                    <Text style={styles.newsTitle}>{news.title}</Text>
-                    <Text style={styles.newsDescription} numberOfLines={2}>
-                      {news.description}
-                    </Text>
-                  </View>
-                </TouchableOpacity>
-              );
-            }
-          })
-        ) : searchQuery.length > 0 ? (
-          <View style={styles.emptyState}>
-            <Ionicons name="search-outline" size={64} color="#E5E7EB" />
-            <Text style={styles.emptyText}>No results found</Text>
-            <Text style={styles.emptySubtext}>Try different keywords</Text>
+            {/* News Results */}
+            {searchResults.news.length > 0 && (
+              <View style={styles.resultSection}>
+                <Text style={styles.resultSectionTitle}>News ({searchResults.news.length})</Text>
+                {searchResults.news.map(renderNewsResult)}
+              </View>
+            )}
+
+            {/* No Results */}
+            {searchResults.teams.length === 0 &&
+              searchResults.leagues.length === 0 &&
+              searchResults.matches.length === 0 &&
+              searchResults.news.length === 0 && (
+                <View style={styles.noResults}>
+                  <Ionicons name="search-outline" size={64} color="#E5E5E5" />
+                  <Text style={styles.noResultsText}>No results found</Text>
+                </View>
+              )}
           </View>
         ) : (
-          <View style={styles.emptyState}>
-            <Ionicons name="compass-outline" size={64} color="#E5E7EB" />
-            <Text style={styles.emptyText}>Discover football</Text>
-            <Text style={styles.emptySubtext}>
-              Search for teams, matches, or browse leagues
-            </Text>
-          </View>
-        )}
-      </ScrollView>
+          // Browse Content (when not searching)
+          <>
+            {/* Quick Actions */}
+            <View style={styles.section}>
+              <View style={styles.quickActions}>
+                <TouchableOpacity
+                  style={styles.quickActionButton}
+                  onPress={() => router.push('/live' as any)}
+                >
+                  <View style={[styles.quickActionIcon, { backgroundColor: '#FF3B30' }]}>
+                    <Ionicons name="radio" size={24} color="#FFF" />
+                  </View>
+                  <Text style={styles.quickActionText}>Live Now</Text>
+                </TouchableOpacity>
 
-      {/* Filter Modal */}
-      <Modal
-        visible={showFilterModal}
-        animationType="slide"
-        transparent
-        onRequestClose={() => setShowFilterModal(false)}
-      >
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Filters</Text>
-              <TouchableOpacity onPress={() => setShowFilterModal(false)}>
-                <Ionicons name="close" size={28} color="#000" />
-              </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.quickActionButton}
+                  onPress={() => router.push('/upcoming' as any)}
+                >
+                  <View style={[styles.quickActionIcon, { backgroundColor: '#0066CC' }]}>
+                    <Ionicons name="calendar" size={24} color="#FFF" />
+                  </View>
+                  <Text style={styles.quickActionText}>Upcoming</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.quickActionButton}
+                  onPress={() => router.push('/news' as any)}
+                >
+                  <View style={[styles.quickActionIcon, { backgroundColor: '#34C759' }]}>
+                    <Ionicons name="newspaper" size={24} color="#FFF" />
+                  </View>
+                  <Text style={styles.quickActionText}>News</Text>
+                </TouchableOpacity>
+              </View>
             </View>
 
-            <ScrollView showsVerticalScrollIndicator={false}>
-              <View style={styles.filterSection}>
-                <Text style={styles.filterSectionTitle}>Content Type</Text>
-                {categories.map(cat => (
-                  <TouchableOpacity
-                    key={cat}
-                    style={styles.filterOption}
-                    onPress={() => {
-                      setSelectedCategory(cat);
-                      setShowFilterModal(false);
-                    }}
-                  >
-                    <Text style={styles.filterOptionText}>{cat}</Text>
-                    {selectedCategory === cat && (
-                      <Ionicons name="checkmark" size={24} color="#0066CC" />
-                    )}
-                  </TouchableOpacity>
-                ))}
+            {/* Browse Leagues */}
+            <View style={styles.section}>
+              <View style={styles.sectionHeader}>
+                <Text style={styles.sectionTitle}>Browse Leagues</Text>
+                <TouchableOpacity onPress={() => router.push('/(tabs)/communities?filter=leagues' as any)}>
+                  <Text style={styles.seeAllText}>See All</Text>
+                </TouchableOpacity>
               </View>
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={styles.leaguesScroll}
+              >
+                {leagues.slice(0, 8).map(renderLeagueCard)}
+              </ScrollView>
+            </View>
 
-              <View style={styles.filterSection}>
-                <Text style={styles.filterSectionTitle}>Leagues</Text>
-                {leagues.map(league => (
-                  <TouchableOpacity
-                    key={league.id}
-                    style={styles.filterOption}
-                    onPress={() => {
-                      setSearchQuery(league.name);
-                      setShowFilterModal(false);
-                      performSearch(league.name);
-                    }}
-                  >
-                    <View style={styles.leagueOption}>
-                      <Text style={styles.leagueOptionIcon}>{league.icon}</Text>
-                      <Text style={styles.filterOptionText}>{league.name}</Text>
-                    </View>
-                  </TouchableOpacity>
-                ))}
+            {/* Popular Teams */}
+            <View style={styles.section}>
+              <View style={styles.sectionHeader}>
+                <Text style={styles.sectionTitle}>Popular Teams</Text>
+                <TouchableOpacity onPress={() => router.push('/(tabs)/communities?filter=teams' as any)}>
+                  <Text style={styles.seeAllText}>See All</Text>
+                </TouchableOpacity>
               </View>
-            </ScrollView>
-          </View>
-        </View>
-      </Modal>
+              {popularTeams.map(renderTeamCard)}
+            </View>
+          </>
+        )}
+
+        <View style={{ height: 40 }} />
+      </ScrollView>
     </View>
   );
 }
@@ -304,9 +364,9 @@ const styles = StyleSheet.create({
   },
   header: {
     paddingHorizontal: 20,
-    paddingTop: 60,
-    paddingBottom: 15,
-    backgroundColor: '#FFFFFF',
+    paddingTop: 70,
+    paddingBottom: 16,
+    backgroundColor: '#FFF',
   },
   title: {
     fontSize: 32,
@@ -314,78 +374,106 @@ const styles = StyleSheet.create({
     color: '#000',
   },
   searchContainer: {
-    paddingHorizontal: 20,
-    paddingVertical: 12,
-    backgroundColor: '#FFFFFF',
-    borderBottomWidth: 1,
-    borderBottomColor: '#E5E7EB',
-  },
-  searchBar: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#F5F5F7',
+    backgroundColor: '#F0F0F0',
     borderRadius: 12,
-    paddingHorizontal: 15,
+    paddingHorizontal: 16,
     paddingVertical: 12,
+    marginHorizontal: 20,
+    marginTop: 8,
+    marginBottom: 16,
   },
   searchInput: {
     flex: 1,
-    marginLeft: 10,
     fontSize: 16,
     color: '#000',
+    marginLeft: 8,
   },
-  filterButton: {
-    padding: 4,
+  content: {
+    flex: 1,
   },
-  quickFilters: {
-    backgroundColor: '#FFFFFF',
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: '#E5E7EB',
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
-  quickFiltersContent: {
-    paddingHorizontal: 20,
+  searchingContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 40,
   },
-  filterChip: {
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: 20,
-    backgroundColor: '#F5F5F7',
-    marginRight: 8,
-    borderWidth: 1,
-    borderColor: 'transparent',
-  },
-  filterChipActive: {
-    backgroundColor: '#0066CC',
-    borderColor: '#0066CC',
-  },
-  filterChipText: {
-    fontSize: 14,
-    fontWeight: '600',
+  searchingText: {
+    fontSize: 16,
     color: '#666',
+    marginLeft: 12,
   },
-  filterChipTextActive: {
-    color: '#FFFFFF',
+  
+  // Quick Actions
+  section: {
+    marginTop: 20,
   },
-  popularLeagues: {
+  quickActions: {
+    flexDirection: 'row',
+    paddingHorizontal: 20,
+    gap: 12,
+  },
+  quickActionButton: {
+    flex: 1,
+    alignItems: 'center',
+    backgroundColor: '#FFF',
+    borderRadius: 16,
     padding: 20,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.08,
+    shadowRadius: 8,
+    elevation: 3,
+  },
+  quickActionIcon: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  quickActionText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#000',
+  },
+  
+  // Sections
+  sectionHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 20,
+    marginBottom: 16,
   },
   sectionTitle: {
     fontSize: 20,
     fontWeight: '700',
     color: '#000',
-    marginBottom: 15,
   },
-  leaguesGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
+  seeAllText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#0066CC',
+  },
+  
+  // Leagues
+  leaguesScroll: {
+    paddingHorizontal: 16,
     gap: 12,
   },
   leagueCard: {
-    backgroundColor: '#FFFFFF',
+    width: 120,
+    backgroundColor: '#FFF',
     borderRadius: 16,
-    padding: 20,
-    width: '48%',
+    padding: 16,
     alignItems: 'center',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
@@ -393,221 +481,206 @@ const styles = StyleSheet.create({
     shadowRadius: 8,
     elevation: 3,
   },
-  leagueIcon: {
-    fontSize: 36,
-    marginBottom: 8,
+  leagueLogo: {
+    width: 48,
+    height: 48,
+    marginBottom: 12,
+  },
+  leagueLogoPlaceholder: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: '#F0F0F0',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 12,
   },
   leagueName: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#333',
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#000',
     textAlign: 'center',
+    minHeight: 32,
   },
-  results: {
+  leagueCountry: {
+    fontSize: 11,
+    color: '#666',
+    marginTop: 4,
+  },
+  
+  // Teams
+  teamCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FFF',
+    borderRadius: 12,
+    padding: 12,
+    marginHorizontal: 20,
+    marginBottom: 8,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  teamLogo: {
+    width: 40,
+    height: 40,
+    marginRight: 12,
+  },
+  teamLogoPlaceholder: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#F0F0F0',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 12,
+  },
+  teamInfo: {
     flex: 1,
   },
-  resultCard: {
-    backgroundColor: '#FFFFFF',
-    marginHorizontal: 20,
-    marginTop: 12,
-    borderRadius: 16,
-    padding: 20,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.08,
-    shadowRadius: 8,
-    elevation: 3,
+  teamName: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#000',
   },
-  matchResult: {},
-  matchHeader: {
+  teamLeague: {
+    fontSize: 13,
+    color: '#666',
+    marginTop: 2,
+  },
+  
+  // Search Results
+  searchResults: {
+    paddingTop: 8,
+  },
+  resultSection: {
+    marginBottom: 24,
+  },
+  resultSectionTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#666',
+    paddingHorizontal: 20,
+    marginBottom: 12,
+  },
+  
+  // Match Results
+  matchResult: {
+    backgroundColor: '#FFF',
+    borderRadius: 12,
+    padding: 16,
+    marginHorizontal: 20,
+    marginBottom: 8,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  matchResultHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: 12,
   },
-  liveIndicator: {
+  matchResultLeague: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#0066CC',
+  },
+  liveBadge: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#FFF1F0',
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
   },
   liveDot: {
     width: 6,
     height: 6,
     borderRadius: 3,
     backgroundColor: '#FF3B30',
-    marginRight: 6,
+    marginRight: 4,
   },
   liveText: {
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: '700',
     color: '#FF3B30',
   },
-  matchLeague: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#999',
+  matchResultTeams: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
   },
-  matchScore: {
-    fontSize: 28,
+  matchResultTeam: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  matchResultLogo: {
+    width: 24,
+    height: 24,
+    marginRight: 8,
+  },
+  matchResultTeamName: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#000',
+    flex: 1,
+  },
+  matchResultScore: {
+    fontSize: 18,
     fontWeight: '800',
     color: '#000',
-    marginBottom: 8,
+    marginHorizontal: 12,
   },
-  matchTeams: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#666',
-  },
-  newsResultCard: {
-    backgroundColor: '#FFFFFF',
-    marginHorizontal: 20,
-    marginTop: 12,
-    borderRadius: 16,
+  
+  // News Results
+  newsResult: {
     flexDirection: 'row',
+    backgroundColor: '#FFF',
+    borderRadius: 12,
     overflow: 'hidden',
+    marginHorizontal: 20,
+    marginBottom: 8,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.08,
-    shadowRadius: 8,
-    elevation: 3,
-  },
-  newsImageContainer: {
-    width: 120,
-    height: 120,
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 4,
+    elevation: 2,
   },
   newsResultImage: {
-    width: '100%',
-    height: '100%',
-  },
-  newsImagePlaceholder: {
-    width: '100%',
-    height: '100%',
-    backgroundColor: '#F5F5F7',
-    alignItems: 'center',
-    justifyContent: 'center',
+    width: 100,
+    height: 100,
   },
   newsResultContent: {
     flex: 1,
     padding: 12,
-    justifyContent: 'space-between',
+    justifyContent: 'center',
   },
-  newsResultHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
+  newsResultTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#000',
     marginBottom: 6,
   },
-  newsSource: {
-    fontSize: 11,
-    fontWeight: '700',
+  newsResultMeta: {
+    fontSize: 12,
     color: '#0066CC',
+    fontWeight: '600',
   },
-  newsDot: {
-    fontSize: 11,
-    color: '#999',
-    marginHorizontal: 4,
-  },
-  newsTime: {
-    fontSize: 11,
-    color: '#999',
-  },
-  newsTitle: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: '#000',
-    marginBottom: 4,
-    lineHeight: 20,
-  },
-  newsDescription: {
-    fontSize: 13,
-    color: '#666',
-    lineHeight: 18,
-  },
-  loadingContainer: {
-    paddingVertical: 60,
+  
+  // No Results
+  noResults: {
     alignItems: 'center',
+    paddingVertical: 80,
   },
-  loadingText: {
+  noResultsText: {
     fontSize: 16,
     color: '#999',
-  },
-  emptyState: {
-    paddingVertical: 100,
-    alignItems: 'center',
-    paddingHorizontal: 40,
-  },
-  emptyText: {
-    fontSize: 20,
-    fontWeight: '700',
-    color: '#999',
-    marginTop: 20,
-  },
-  emptySubtext: {
-    fontSize: 15,
-    color: '#999',
-    marginTop: 8,
-    textAlign: 'center',
-  },
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.5)',
-    justifyContent: 'flex-end',
-  },
-  modalContent: {
-    backgroundColor: '#FFFFFF',
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
-    paddingTop: 20,
-    paddingBottom: 40,
-    maxHeight: '80%',
-  },
-  modalHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingHorizontal: 20,
-    paddingBottom: 20,
-    borderBottomWidth: 1,
-    borderBottomColor: '#E5E7EB',
-  },
-  modalTitle: {
-    fontSize: 24,
-    fontWeight: '800',
-    color: '#000',
-  },
-  filterSection: {
-    paddingTop: 20,
-    paddingHorizontal: 20,
-  },
-  filterSectionTitle: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#999',
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-    marginBottom: 12,
-  },
-  filterOption: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingVertical: 16,
-    borderBottomWidth: 1,
-    borderBottomColor: '#F5F5F7',
-  },
-  filterOptionText: {
-    fontSize: 17,
-    fontWeight: '600',
-    color: '#000',
-  },
-  leagueOption: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  leagueOptionIcon: {
-    fontSize: 24,
-    marginRight: 12,
+    marginTop: 16,
   },
 });

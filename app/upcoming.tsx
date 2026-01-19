@@ -1,5 +1,5 @@
 // app/upcoming.tsx
-// ✅ FIXED: Uses real API data with automatic timezone conversion
+// IMPROVED: Date grouping, better organization
 
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
@@ -11,10 +11,15 @@ import { useAuth } from '../context/AuthContext';
 import { auth, db } from '../firebaseConfig';
 import { footballAPI, Match } from '../services/footballApi';
 
+interface GroupedMatches {
+  [key: string]: Match[];
+}
+
 export default function UpcomingScreen() {
   const router = useRouter();
   const { userProfile } = useAuth();
   const [matches, setMatches] = useState<Match[]>([]);
+  const [groupedMatches, setGroupedMatches] = useState<GroupedMatches>({});
   const [refreshing, setRefreshing] = useState(false);
   const [loading, setLoading] = useState(true);
   const [subscribedMatches, setSubscribedMatches] = useState<Set<string>>(new Set());
@@ -25,27 +30,22 @@ export default function UpcomingScreen() {
   }, []);
   
   useEffect(() => {
-  const unsub = onAuthStateChanged(auth, (user) => {
-    if (!user) {
-      console.log('Auth not ready yet');
-      return;
-    }
+    const unsub = onAuthStateChanged(auth, (user) => {
+      if (!user) return;
+      loadSubscriptions(user.uid);
+    });
+    return unsub;
+  }, []);
 
-    console.log('Auth ready, uid:', user.uid);
-    loadSubscriptions(user.uid);
-  });
-
-  return unsub;
-}, []);
-
-
-  // ✅ FIXED: Actually load from API instead of sample data
   const loadMatches = async () => {
     try {
       setLoading(true);
       const upcomingMatches = await footballAPI.getUpcomingMatches();
-      console.log('Loaded upcoming matches:', upcomingMatches.length);
       setMatches(upcomingMatches);
+      
+      // Group matches by date
+      const grouped = groupMatchesByDate(upcomingMatches);
+      setGroupedMatches(grouped);
     } catch (error) {
       console.error('Error loading matches:', error);
       Alert.alert('Error', 'Failed to load upcoming matches');
@@ -54,9 +54,38 @@ export default function UpcomingScreen() {
     }
   };
 
-    const loadSubscriptions = async (uid: string) => {
+  const groupMatchesByDate = (matches: Match[]): GroupedMatches => {
+    const grouped: GroupedMatches = {};
+    const now = new Date();
+    now.setHours(0, 0, 0, 0);
+    
+    matches.forEach(match => {
+      const matchDate = new Date(match.date);
+      matchDate.setHours(0, 0, 0, 0);
+      
+      const diffDays = Math.floor((matchDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+      
+      let groupKey: string;
+      if (diffDays === 0) {
+        groupKey = 'Today';
+      } else if (diffDays === 1) {
+        groupKey = 'Tomorrow';
+      } else if (diffDays <= 6) {
+        groupKey = matchDate.toLocaleDateString('en-US', { weekday: 'long', month: 'short', day: 'numeric' });
+      } else {
+        groupKey = matchDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+      }
+      
+      if (!grouped[groupKey]) {
+        grouped[groupKey] = [];
+      }
+      grouped[groupKey].push(match);
+    });
+    
+    return grouped;
+  };
 
-
+  const loadSubscriptions = async (uid: string) => {
     try {
       const q = query(
         collection(db, 'matchNotifications'),
@@ -74,16 +103,14 @@ export default function UpcomingScreen() {
   };
 
   const onRefresh = async () => {
-  setRefreshing(true);
-  await loadMatches();
-
-  const uid = auth.currentUser?.uid;
-  if (uid) {
-    await loadSubscriptions(uid);
-  }
-
-  setRefreshing(false);
-};
+    setRefreshing(true);
+    await loadMatches();
+    const uid = auth.currentUser?.uid;
+    if (uid) {
+      await loadSubscriptions(uid);
+    }
+    setRefreshing(false);
+  };
 
   const handleNotifyMe = async (matchId: string) => {
     if (!userProfile?.uid) {
@@ -97,7 +124,6 @@ export default function UpcomingScreen() {
       const isSubscribed = subscribedMatches.has(matchId);
 
       if (isSubscribed) {
-        // Unsubscribe
         const q = query(
           collection(db, 'matchNotifications'),
           where('userId', '==', userProfile.uid),
@@ -114,7 +140,6 @@ export default function UpcomingScreen() {
           return newSet;
         });
       } else {
-        // Subscribe
         await addDoc(collection(db, 'matchNotifications'), {
           userId: userProfile.uid,
           matchId,
@@ -131,33 +156,12 @@ export default function UpcomingScreen() {
     }
   };
 
-  // ✅ FIXED: Format time with automatic timezone
   const formatMatchTime = (match: Match) => {
     const date = new Date(match.date);
-    const now = new Date();
-    const tomorrow = new Date(now);
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    
-    // Check if today
-    const isToday = date.toDateString() === now.toDateString();
-    const isTomorrow = date.toDateString() === tomorrow.toDateString();
-    
-    // Get day name for dates beyond tomorrow
-    const dayName = date.toLocaleDateString('en-US', { weekday: 'long' });
-    
-    // Get time in user's local timezone
-    const time = date.toLocaleTimeString('en-US', {
+    return date.toLocaleTimeString('en-US', {
       hour: 'numeric',
       minute: '2-digit',
     });
-    
-    if (isToday) {
-      return `Today, ${time}`;
-    } else if (isTomorrow) {
-      return `Tomorrow, ${time}`;
-    } else {
-      return `${dayName}, ${time}`;
-    }
   };
 
   const renderMatchCard = (match: Match) => {
@@ -166,7 +170,7 @@ export default function UpcomingScreen() {
 
     return (
       <View key={match.id} style={styles.matchCard}>
-        {/* League Header */}
+        {/* League & Time Header */}
         <View style={styles.matchHeader}>
           <Text style={styles.leagueName}>{match.league.toUpperCase()}</Text>
           <Text style={styles.matchTime}>{formatMatchTime(match)}</Text>
@@ -174,26 +178,19 @@ export default function UpcomingScreen() {
 
         {/* Teams */}
         <View style={styles.teamsContainer}>
-          {/* Home Team */}
           <View style={styles.team}>
             {match.homeLogo ? (
-              <Image source={{ uri: match.homeLogo }} 
-              style={styles.teamIcon} 
-              resizeMode="contain"
-              />
+              <Image source={{ uri: match.homeLogo }} style={styles.teamIcon} resizeMode="contain" />
             ) : (
               <View style={[styles.teamIcon, styles.teamIconPlaceholder]}>
                 <Text style={styles.teamIconText}>{match.home[0]}</Text>
               </View>
             )}
-            <Text style={styles.teamName} numberOfLines={1}>
-              {match.home}
-            </Text>
+            <Text style={styles.teamName} numberOfLines={1}>{match.home}</Text>
           </View>
 
           <Text style={styles.vsText}>vs</Text>
 
-          {/* Away Team */}
           <View style={styles.team}>
             {match.awayLogo ? (
               <Image source={{ uri: match.awayLogo }} style={styles.teamIcon} resizeMode="contain" />
@@ -202,21 +199,11 @@ export default function UpcomingScreen() {
                 <Text style={styles.teamIconText}>{match.away[0]}</Text>
               </View>
             )}
-            <Text style={styles.teamName} numberOfLines={1}>
-              {match.away}
-            </Text>
+            <Text style={styles.teamName} numberOfLines={1}>{match.away}</Text>
           </View>
         </View>
 
-        {/* Venue */}
-        {match.league && (
-          <View style={styles.venueContainer}>
-            <Ionicons name="location-outline" size={14} color="#999" />
-            <Text style={styles.venueText}>{match.league}</Text>
-          </View>
-        )}
-
-        {/* Action Buttons */}
+        {/* Actions */}
         <View style={styles.actionsContainer}>
           <TouchableOpacity
             style={[styles.notifyButton, isSubscribed && styles.notifyButtonActive]}
@@ -225,15 +212,10 @@ export default function UpcomingScreen() {
           >
             <Ionicons
               name={isSubscribed ? 'notifications' : 'notifications-outline'}
-              size={18}
+              size={16}
               color={isSubscribed ? '#FFF' : '#0066CC'}
             />
-            <Text
-              style={[
-                styles.notifyButtonText,
-                isSubscribed && styles.notifyButtonTextActive,
-              ]}
-            >
+            <Text style={[styles.notifyButtonText, isSubscribed && styles.notifyButtonTextActive]}>
               {isLoading ? '...' : isSubscribed ? 'Notifying' : 'Notify Me'}
             </Text>
           </TouchableOpacity>
@@ -255,18 +237,16 @@ export default function UpcomingScreen() {
       {/* Header */}
       <View style={styles.header}>
         <TouchableOpacity onPress={() => router.back()}>
-          <Ionicons name="chevron-back" size={28} color="#000" />
+          <Ionicons name="chevron-back" size={24} color="#000" />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>Upcoming Matches</Text>
-        <View style={{ width: 28 }} />
+        <View style={{ width: 24 }} />
       </View>
 
       <ScrollView
         style={styles.content}
         showsVerticalScrollIndicator={false}
-        refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
-        }
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
       >
         {loading ? (
           <View style={styles.loadingContainer}>
@@ -276,9 +256,7 @@ export default function UpcomingScreen() {
           <View style={styles.emptyState}>
             <Ionicons name="calendar-outline" size={64} color="#E5E7EB" />
             <Text style={styles.emptyText}>No upcoming matches</Text>
-            <Text style={styles.emptySubtext}>
-              Check back soon for scheduled matches
-            </Text>
+            <Text style={styles.emptySubtext}>Check back soon for scheduled matches</Text>
           </View>
         ) : (
           <>
@@ -290,8 +268,17 @@ export default function UpcomingScreen() {
               </Text>
             </View>
 
-            {/* Matches List */}
-            {matches.map((match) => renderMatchCard(match))}
+            {/* Grouped Matches */}
+            {Object.keys(groupedMatches).map((dateKey) => (
+              <View key={dateKey} style={styles.dateSection}>
+                <View style={styles.dateSectionHeader}>
+                  <View style={styles.dateLine} />
+                  <Text style={styles.dateSectionTitle}>{dateKey}</Text>
+                  <View style={styles.dateLine} />
+                </View>
+                {groupedMatches[dateKey].map((match) => renderMatchCard(match))}
+              </View>
+            ))}
           </>
         )}
 
@@ -366,10 +353,34 @@ const styles = StyleSheet.create({
     marginLeft: 10,
     flex: 1,
   },
+  
+  // NEW: Date Section Styles
+  dateSection: {
+    marginTop: 16,
+  },
+  dateSectionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    marginBottom: 12,
+  },
+  dateLine: {
+    flex: 1,
+    height: 1,
+    backgroundColor: '#E5E5E5',
+  },
+  dateSectionTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#000',
+    paddingHorizontal: 12,
+    backgroundColor: '#F5F5F7',
+  },
+  
   matchCard: {
     backgroundColor: '#FFFFFF',
     marginHorizontal: 16,
-    marginTop: 12,
+    marginBottom: 12,
     borderRadius: 16,
     padding: 20,
     shadowColor: '#000',
@@ -391,32 +402,31 @@ const styles = StyleSheet.create({
     letterSpacing: 0.5,
   },
   matchTime: {
-    fontSize: 13,
-    fontWeight: '600',
+    fontSize: 15,
+    fontWeight: '700',
     color: '#0066CC',
   },
   teamsContainer: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginBottom: 12,
+    marginBottom: 16,
   },
   team: {
     flex: 1,
     alignItems: 'center',
   },
-teamIcon: {
-  width: 60,
-  height: 60,
-  marginBottom: 8,
-},
-teamIconPlaceholder: {
-  width: 60,
-  height: 60,
-  backgroundColor: '#E5E7EB',
-  borderRadius: 30,
-  marginBottom: 8,
-},
+  teamIcon: {
+    width: 56,
+    height: 56,
+    marginBottom: 8,
+  },
+  teamIconPlaceholder: {
+    backgroundColor: '#E5E7EB',
+    borderRadius: 28,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
   teamIconText: {
     fontSize: 20,
     fontWeight: '700',
@@ -433,17 +443,6 @@ teamIconPlaceholder: {
     fontWeight: '600',
     color: '#999',
     marginHorizontal: 12,
-  },
-  venueContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 16,
-  },
-  venueText: {
-    fontSize: 13,
-    color: '#999',
-    marginLeft: 4,
   },
   actionsContainer: {
     flexDirection: 'row',

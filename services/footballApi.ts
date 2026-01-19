@@ -1,5 +1,6 @@
 // services/footballApi.ts
 // STRICT filtering - Only real top leagues, no youth/reserve teams
+// UPDATED: Added community generation methods and league standings
 
 export interface Match {
   id: number;
@@ -14,6 +15,9 @@ export interface Match {
   activeUsers?: number;
   homeLogo?: string;
   awayLogo?: string;
+  homeId?: number;  // NEW: for community generation
+  awayId?: number;  // NEW: for community generation
+  leagueId?: number;  // NEW: for community generation
 }
 
 export interface Lineup {
@@ -35,6 +39,51 @@ export interface MatchEvent {
   player: string;
   team: string;
   detail?: string;
+}
+
+// NEW: Community interfaces
+export interface TeamCommunity {
+  id: number;
+  name: string;
+  logo: string;
+  leagueId: number;
+  leagueName: string;
+}
+
+export interface LeagueCommunity {
+  id: number;
+  name: string;
+  logo?: string;
+  country: string;
+}
+
+export interface LeagueStanding {
+  rank: number;
+  team: {
+    id: number;
+    name: string;
+    logo: string;
+  };
+  points: number;
+  goalsDiff: number;
+  form: string;
+  played: number;
+  win: number;
+  draw: number;
+  lose: number;
+  goalsFor: number;
+  goalsAgainst: number;
+}
+
+export interface FinishedMatch {
+  id: number;
+  home: string;
+  away: string;
+  score: string;
+  league: string;
+  date: string;
+  homeLogo?: string;
+  awayLogo?: string;
 }
 
 class FootballAPI {
@@ -173,68 +222,323 @@ class FootballAPI {
     return [];
   }
 
-async getUpcomingMatches(): Promise<Match[]> {
-  try {
-    const startDate = new Date();
-    const daysAhead = 7;
-    const timezone = 'America/Los_Angeles';
+  async getUpcomingMatches(): Promise<Match[]> {
+    try {
+      const startDate = new Date();
+      const daysAhead = 7;
 
-    // Build array of date strings
-    const dateStrings: string[] = [];
-    for (let i = 0; i < daysAhead; i++) {
-      const d = new Date(startDate);
-      d.setDate(startDate.getDate() + i);
-      dateStrings.push(d.toISOString().split('T')[0]);
+      // Build array of date strings
+      const dateStrings: string[] = [];
+      for (let i = 0; i < daysAhead; i++) {
+        const d = new Date(startDate);
+        d.setDate(startDate.getDate() + i);
+        dateStrings.push(d.toISOString().split('T')[0]);
+      }
+
+      // Fetch each day individually
+      const fixturesArray = await Promise.all(
+        dateStrings.map(d =>
+          this.fetch(`/fixtures?date=${d}`)
+        )
+      );
+
+      const allFixtures = fixturesArray.flatMap(data => data?.response || []);
+
+      if (allFixtures.length === 0) return this.getMockUpcomingMatches();
+
+      // STRICT filtering
+      const filtered = allFixtures.filter((f: any) => {
+        if (f.fixture.status.short !== 'NS') return false;
+
+        const isAllowedLeague = this.allowedLeagueIds.includes(f.league.id);
+        const hasPriorityTeam = this.priorityTeams.some(team =>
+          f.teams.home.name.toLowerCase().includes(team.toLowerCase()) ||
+          f.teams.away.name.toLowerCase().includes(team.toLowerCase())
+        );
+
+        if (!isAllowedLeague && !hasPriorityTeam) return false;
+
+        const leagueName = f.league.name.toLowerCase();
+        const homeName = f.teams.home.name.toLowerCase();
+        const awayName = f.teams.away.name.toLowerCase();
+
+        const hasBlockedKeyword = this.blockedKeywords.some(keyword =>
+          leagueName.includes(keyword) ||
+          homeName.includes(keyword) ||
+          awayName.includes(keyword)
+        );
+
+        return !hasBlockedKeyword;
+      });
+
+      const formatted = this.formatMatches(filtered, 'upcoming');
+
+      formatted.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+
+      return formatted.slice(0, 60);
+    } catch (error) {
+      console.error('Error fetching upcoming matches:', error);
+      return this.getMockUpcomingMatches();
     }
-
-    // Fetch **each day individually** (API seems to ignore ranges)
-    const fixturesArray = await Promise.all(
-      dateStrings.map(d =>
-        this.fetch(`/fixtures?date=${d}&timezone=${timezone}`)
-      )
-    );
-
-    const allFixtures = fixturesArray.flatMap(data => data?.response || []);
-
-    if (allFixtures.length === 0) return this.getMockUpcomingMatches();
-
-    // STRICT filtering
-    const filtered = allFixtures.filter((f: any) => {
-      if (f.fixture.status.short !== 'NS') return false;
-
-      const isAllowedLeague = this.allowedLeagueIds.includes(f.league.id);
-      const hasPriorityTeam = this.priorityTeams.some(team =>
-        f.teams.home.name.toLowerCase().includes(team.toLowerCase()) ||
-        f.teams.away.name.toLowerCase().includes(team.toLowerCase())
-      );
-
-      if (!isAllowedLeague && !hasPriorityTeam) return false;
-
-      const leagueName = f.league.name.toLowerCase();
-      const homeName = f.teams.home.name.toLowerCase();
-      const awayName = f.teams.away.name.toLowerCase();
-
-      const hasBlockedKeyword = this.blockedKeywords.some(keyword =>
-        leagueName.includes(keyword) ||
-        homeName.includes(keyword) ||
-        awayName.includes(keyword)
-      );
-
-      return !hasBlockedKeyword;
-    });
-
-    const formatted = this.formatMatches(filtered, 'upcoming');
-
-    formatted.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
-
-    return formatted.slice(0, 60);
-  } catch (error) {
-    console.error('Error fetching upcoming matches:', error);
-    return this.getMockUpcomingMatches();
   }
-}
 
+  /**
+   * NEW: Extract unique teams and leagues from live + upcoming matches
+   */
+  async getCommunitiesFromMatches(): Promise<{
+    teams: TeamCommunity[];
+    leagues: LeagueCommunity[];
+  }> {
+    try {
+      const [liveMatches, upcomingMatches] = await Promise.all([
+        this.getLiveMatches(),
+        this.getUpcomingMatches()
+      ]);
 
+      const allMatches = [...liveMatches, ...upcomingMatches];
+      
+      // Extract unique teams and leagues
+      const teamsMap = new Map<number, TeamCommunity>();
+      const leaguesMap = new Map<number, LeagueCommunity>();
+
+      // Limit to avoid too many API calls - get a sample
+      const fixtureIds = allMatches.map(m => m.id).slice(0, 40);
+      
+      for (const fixtureId of fixtureIds) {
+        const data = await this.fetch(`/fixtures?id=${fixtureId}`);
+        if (data?.response?.[0]) {
+          const fixture = data.response[0];
+          
+          // Add home team
+          if (fixture.teams.home) {
+            teamsMap.set(fixture.teams.home.id, {
+              id: fixture.teams.home.id,
+              name: fixture.teams.home.name,
+              logo: fixture.teams.home.logo,
+              leagueId: fixture.league.id,
+              leagueName: fixture.league.name
+            });
+          }
+          
+          // Add away team
+          if (fixture.teams.away) {
+            teamsMap.set(fixture.teams.away.id, {
+              id: fixture.teams.away.id,
+              name: fixture.teams.away.name,
+              logo: fixture.teams.away.logo,
+              leagueId: fixture.league.id,
+              leagueName: fixture.league.name
+            });
+          }
+          
+          // Add league
+          if (fixture.league) {
+            leaguesMap.set(fixture.league.id, {
+              id: fixture.league.id,
+              name: fixture.league.name,
+              logo: fixture.league.logo,
+              country: fixture.league.country
+            });
+          }
+        }
+      }
+
+      console.log(`Generated ${teamsMap.size} team communities and ${leaguesMap.size} league communities`);
+
+      return {
+        teams: Array.from(teamsMap.values()),
+        leagues: Array.from(leaguesMap.values())
+      };
+    } catch (error) {
+      console.error('Error getting communities from matches:', error);
+      return { teams: [], leagues: [] };
+    }
+  }
+
+  /**
+   * NEW: Get league standings
+   */
+  async getLeagueStandings(leagueId: number, season: number = 2024): Promise<LeagueStanding[]> {
+    try {
+      const data = await this.fetch(`/standings?league=${leagueId}&season=${season}`);
+      
+      if (data?.response?.[0]?.league?.standings?.[0]) {
+        const standings = data.response[0].league.standings[0];
+        
+        return standings.map((s: any) => ({
+          rank: s.rank,
+          team: {
+            id: s.team.id,
+            name: s.team.name,
+            logo: s.team.logo
+          },
+          points: s.points,
+          goalsDiff: s.goalsDiff,
+          form: s.form,
+          played: s.all.played,
+          win: s.all.win,
+          draw: s.all.draw,
+          lose: s.all.lose,
+          goalsFor: s.all.goals.for,
+          goalsAgainst: s.all.goals.against
+        }));
+      }
+    } catch (error) {
+      console.error('Error fetching league standings:', error);
+    }
+    
+    return [];
+  }
+
+  /**
+   * NEW: Get team's last match result
+   */
+  async getTeamLastMatch(teamId: number): Promise<FinishedMatch | null> {
+    try {
+      const data = await this.fetch(`/fixtures?team=${teamId}&last=1`);
+      
+      if (data?.response?.[0]) {
+        const fixture = data.response[0];
+        
+        return {
+          id: fixture.fixture.id,
+          home: fixture.teams.home.name,
+          away: fixture.teams.away.name,
+          score: `${fixture.goals.home}-${fixture.goals.away}`,
+          league: fixture.league.name,
+          date: fixture.fixture.date,
+          homeLogo: fixture.teams.home.logo,
+          awayLogo: fixture.teams.away.logo
+        };
+      }
+    } catch (error) {
+      console.error('Error fetching team last match:', error);
+    }
+    
+    return null;
+  }
+
+  /**
+   * NEW: Get team's upcoming matches
+   */
+  async getTeamUpcomingMatches(teamId: number, limit: number = 5): Promise<Match[]> {
+    try {
+      const data = await this.fetch(`/fixtures?team=${teamId}&next=${limit}`);
+      
+      if (data?.response) {
+        return this.formatMatches(data.response, 'upcoming');
+      }
+    } catch (error) {
+      console.error('Error fetching team upcoming matches:', error);
+    }
+    
+    return [];
+  }
+
+  /**
+   * NEW: Get league's recent matches (last N days)
+   */
+  async getLeagueRecentMatches(leagueId: number, days: number = 6): Promise<FinishedMatch[]> {
+    try {
+      const endDate = new Date();
+      const startDate = new Date();
+      startDate.setDate(endDate.getDate() - days);
+      
+      const from = startDate.toISOString().split('T')[0];
+      const to = endDate.toISOString().split('T')[0];
+      
+      const data = await this.fetch(`/fixtures?league=${leagueId}&from=${from}&to=${to}&status=FT`);
+      
+      if (data?.response) {
+        return data.response.map((f: any) => ({
+          id: f.fixture.id,
+          home: f.teams.home.name,
+          away: f.teams.away.name,
+          score: `${f.goals.home}-${f.goals.away}`,
+          league: f.league.name,
+          date: f.fixture.date,
+          homeLogo: f.teams.home.logo,
+          awayLogo: f.teams.away.logo
+        }));
+      }
+    } catch (error) {
+      console.error('Error fetching league recent matches:', error);
+    }
+    
+    return [];
+  }
+
+  /**
+   * NEW: Get league's upcoming matches
+   */
+  async getLeagueUpcomingMatches(leagueId: number, limit: number = 10): Promise<Match[]> {
+    try {
+      const data = await this.fetch(`/fixtures?league=${leagueId}&next=${limit}`);
+      
+      if (data?.response) {
+        return this.formatMatches(data.response, 'upcoming');
+      }
+    } catch (error) {
+      console.error('Error fetching league upcoming matches:', error);
+    }
+    
+    return [];
+  }
+
+  /**
+   * NEW: Get recent finished matches across all leagues (last N days)
+   */
+  async getRecentFinishedMatches(days: number = 3): Promise<Match[]> {
+    try {
+      const endDate = new Date();
+      const startDate = new Date();
+      startDate.setDate(endDate.getDate() - days);
+      
+      const from = startDate.toISOString().split('T')[0];
+      const to = endDate.toISOString().split('T')[0];
+      
+      // Get finished matches from all allowed leagues
+      const allFixtures: any[] = [];
+      
+      // Fetch from major leagues only to avoid too many API calls
+      const majorLeagues = [39, 140, 135, 78, 61, 2, 3]; // PL, La Liga, Serie A, Bundesliga, Ligue 1, UCL, UEL
+      
+      for (const leagueId of majorLeagues) {
+        const data = await this.fetch(`/fixtures?league=${leagueId}&from=${from}&to=${to}&status=FT`);
+        if (data?.response) {
+          allFixtures.push(...data.response);
+        }
+      }
+      
+      if (allFixtures.length === 0) return [];
+      
+      // Apply strict filtering
+      const filtered = allFixtures.filter((f: any) => {
+        const leagueName = f.league.name.toLowerCase();
+        const homeName = f.teams.home.name.toLowerCase();
+        const awayName = f.teams.away.name.toLowerCase();
+        
+        const hasBlockedKeyword = this.blockedKeywords.some(keyword =>
+          leagueName.includes(keyword) ||
+          homeName.includes(keyword) ||
+          awayName.includes(keyword)
+        );
+        
+        return !hasBlockedKeyword;
+      });
+      
+      const formatted = this.formatMatches(filtered, 'finished');
+      
+      // Sort by most recent first
+      formatted.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+      
+      return this.sortByImportance(formatted).slice(0, 20);
+    } catch (error) {
+      console.error('Error fetching recent finished matches:', error);
+    }
+    
+    return [];
+  }
 
   /**
    * Sort matches by league importance
@@ -302,15 +606,18 @@ async getUpcomingMatches(): Promise<Match[]> {
         away: f.teams.away.name,
         homeLogo: f.teams.home.logo,
         awayLogo: f.teams.away.logo,
+        homeId: f.teams.home.id,  // NEW: for communities
+        awayId: f.teams.away.id,  // NEW: for communities
+        leagueId: f.league.id,    // NEW: for communities
         score: homeGoals !== null ? `${homeGoals}-${awayGoals}` : undefined,
         league: f.league.name,
         status,
         minute: f.fixture.status.elapsed ? `${f.fixture.status.elapsed}'` : undefined,
         date: f.fixture.date,
         time: status === 'upcoming' ? new Date(f.fixture.date).toLocaleTimeString('en-US', {
-  hour: 'numeric',
-  minute: '2-digit',
-}) : undefined,
+          hour: 'numeric',
+          minute: '2-digit',
+        }) : undefined,
         activeUsers: Math.floor(Math.random() * 5000) + 1000
       };
     });

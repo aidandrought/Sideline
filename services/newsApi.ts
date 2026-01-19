@@ -60,7 +60,7 @@ class NewsAPI {
     'nfl', 'nba', 'mlb', 'nhl', 'ncaa', 'super bowl', 'quarterback', 
     'touchdown', 'basketball', 'baseball', 'hockey', 'american football',
     'cricket', 'ipl', 'bcci', 'virat kohli', 'sachin', 'dhoni',
-    'kabaddi', 'badminton', 'tennis', 'golf', 'f1', 'formula 1',
+    'kabaddi', 'badminton', 'tennis', 'golf', 'f1', 'formula 1', 'college football',
   ];
 
   // Soccer keywords to include
@@ -71,7 +71,7 @@ class NewsAPI {
     'salah', 'real madrid', 'barcelona', 'manchester', 'liverpool',
     'chelsea', 'arsenal', 'bayern', 'psg', 'juventus', 'goal',
     'penalty', 'striker', 'midfielder', 'transfer', 'fa cup',
-    'copa del rey', 'epl', 'ucl', 'el clasico',
+    'copa del rey', 'epl', 'ucl', 'el clasico', 'transfer', 'loan', 'haaland', 
   ];
 
   /**
