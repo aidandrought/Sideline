@@ -32,6 +32,70 @@ interface Message {
   reactions: Record<string, { count: number; userIds: string[] }>;
   replyTo?: string;
 }
+interface Event {
+  minute: number;
+  type: 'goal' | 'yellow' | 'red' | 'substitution' | 'period';
+  team: 'home' | 'away';
+  player: string;
+  text: string;
+}
+
+interface Lineup {
+  formation: string;
+  players: Array<{
+    number: number;
+    name: string;
+    position: string;
+    row: number; // 0=GK, 1=def, 2=mid, 3=fw (matches your live renderer)
+  }>;
+}
+
+const DEMO_EVENTS: Event[] = [
+  { minute: 1, type: 'period', team: 'home', player: '', text: "Kickoff" },
+  { minute: 12, type: 'yellow', team: 'away', player: 'Declan Rice', text: "🟨 Rice booked for a late challenge" },
+  { minute: 23, type: 'goal', team: 'home', player: 'Salah', text: "⚽ GOAL! Salah finishes low to the corner (1-0)" },
+  { minute: 45, type: 'period', team: 'home', player: '', text: "Half-time" },
+  { minute: 53, type: 'goal', team: 'away', player: 'Saka', text: "⚽ GOAL! Saka equalizes with a curler (1-1)" },
+  { minute: 58, type: 'goal', team: 'home', player: 'Salah', text: "⚽ GOAL! Salah again! Liverpool back in front (2-1)" },
+  { minute: 61, type: 'substitution', team: 'home', player: 'Núñez', text: "🔁 Sub: Núñez ↔ Gakpo" },
+  { minute: 64, type: 'yellow', team: 'away', player: 'Gabriel', text: "🟨 Gabriel booked" },
+];
+
+const DEMO_LINEUPS: { home: Lineup; away: Lineup } = {
+  home: {
+    formation: '4-3-3',
+    players: [
+      { number: 1, name: 'Alisson', position: 'GK', row: 0 },
+      { number: 66, name: 'TAA', position: 'RB', row: 1 },
+      { number: 4, name: 'Van Dijk', position: 'CB', row: 1 },
+      { number: 5, name: 'Konaté', position: 'CB', row: 1 },
+      { number: 26, name: 'Robertson', position: 'LB', row: 1 },
+      { number: 8, name: 'Szoboszlai', position: 'CM', row: 2 },
+      { number: 3, name: 'Mac Allister', position: 'CM', row: 2 },
+      { number: 10, name: 'Gravenberch', position: 'CM', row: 2 },
+      { number: 11, name: 'Salah', position: 'RW', row: 3 },
+      { number: 18, name: 'Gakpo', position: 'ST', row: 3 },
+      { number: 7, name: 'Diaz', position: 'LW', row: 3 },
+    ],
+  },
+  away: {
+    formation: '4-3-3',
+    players: [
+      { number: 22, name: 'Raya', position: 'GK', row: 0 },
+      { number: 4, name: 'White', position: 'RB', row: 1 },
+      { number: 2, name: 'Saliba', position: 'CB', row: 1 },
+      { number: 6, name: 'Gabriel', position: 'CB', row: 1 },
+      { number: 35, name: 'Zinchenko', position: 'LB', row: 1 },
+      { number: 8, name: 'Ødegaard', position: 'CM', row: 2 },
+      { number: 41, name: 'Rice', position: 'DM', row: 2 },
+      { number: 29, name: 'Havertz', position: 'CM', row: 2 },
+      { number: 7, name: 'Saka', position: 'RW', row: 3 },
+      { number: 9, name: 'Jesus', position: 'ST', row: 3 },
+      { number: 11, name: 'Martinelli', position: 'LW', row: 3 },
+    ],
+  },
+};
+
 
 // DEMO HARDCODED DATA - Only for this demo screen
 const DEMO_MATCH = {
@@ -71,6 +135,11 @@ const DEMO_STATS = {
 };
 
 export default function DemoMatch() {
+  const [events] = useState<Event[]>(DEMO_EVENTS);
+  const [lineups] = useState<{ home: Lineup; away: Lineup }>({
+    home: DEMO_LINEUPS.home,
+    away: DEMO_LINEUPS.away,
+  });
   const { userProfile } = useAuth();
   const [activeTab, setActiveTab] = useState<TabType>('chat');
   const [messages, setMessages] = useState<Message[]>(DEMO_MESSAGES);
@@ -185,7 +254,7 @@ export default function DemoMatch() {
     const total = homeValue + awayValue;
     const homePercent = total > 0 ? (homeValue / total) * 100 : 50;
     const awayPercent = 100 - homePercent;
-
+    
     return (
       <View style={styles.statRow}>
         <Text style={styles.statValue}>{homeValue}</Text>
@@ -200,6 +269,73 @@ export default function DemoMatch() {
       </View>
     );
   };
+      const renderEvent = (event: Event, index: number) => {
+  const getEventIcon = () => {
+    switch (event.type) {
+      case 'goal': return 'football';
+      case 'yellow': return 'warning';
+      case 'red': return 'close-circle';
+      case 'substitution': return 'swap-horizontal';
+      default: return 'time';
+    }
+  };
+
+  const getEventColor = () => {
+    switch (event.type) {
+      case 'goal': return '#34C759';
+      case 'yellow': return '#FFD60A';
+      case 'red': return '#FF3B30';
+      case 'substitution': return '#0066CC';
+      default: return '#666';
+    }
+  };
+
+  return (
+    <View key={index} style={styles.eventCard}>
+      <Text style={styles.eventMinute}>{event.minute}'</Text>
+      <Ionicons name={getEventIcon() as any} size={20} color={getEventColor()} />
+      <Text style={styles.eventText}>{event.text}</Text>
+    </View>
+  );
+};
+
+const renderLineupsSimple = (team: 'home' | 'away') => {
+  const lineup = team === 'home' ? lineups.home : lineups.away;
+  const teamName = team === 'home' ? DEMO_MATCH.home : DEMO_MATCH.away;
+
+  // Group by row (GK/DEF/MID/FWD)
+  const groups = [
+    { label: 'GK', row: 0 },
+    { label: 'DEF', row: 1 },
+    { label: 'MID', row: 2 },
+    { label: 'FWD', row: 3 },
+  ];
+
+  return (
+    <View style={styles.lineupsBlock}>
+      <View style={styles.lineupsHeaderRow}>
+        <Text style={styles.lineupsTeamName}>{teamName}</Text>
+        <Text style={styles.lineupsFormation}>{lineup.formation}</Text>
+      </View>
+
+      {groups.map(g => {
+        const players = lineup.players.filter(p => p.row === g.row);
+        return (
+          <View key={g.label} style={styles.lineupsGroup}>
+            <Text style={styles.lineupsGroupLabel}>{g.label}</Text>
+            {players.map(p => (
+              <View key={p.number} style={styles.lineupsPlayerRow}>
+                <Text style={styles.lineupsNumber}>{p.number}</Text>
+                <Text style={styles.lineupsName}>{p.name}</Text>
+                <Text style={styles.lineupsPos}>{p.position}</Text>
+              </View>
+            ))}
+          </View>
+        );
+      })}
+    </View>
+  );
+};
 
   return (
     <View style={styles.container}>
@@ -233,24 +369,46 @@ export default function DemoMatch() {
       </View>
 
       {/* Tabs */}
-      <View style={styles.tabs}>
-        <TouchableOpacity
-          style={[styles.tab, activeTab === 'chat' && styles.tabActive]}
-          onPress={() => setActiveTab('chat')}
-        >
-          <Text style={[styles.tabText, activeTab === 'chat' && styles.tabTextActive]}>
-            Chat
-          </Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={[styles.tab, activeTab === 'stats' && styles.tabActive]}
-          onPress={() => setActiveTab('stats')}
-        >
-          <Text style={[styles.tabText, activeTab === 'stats' && styles.tabTextActive]}>
-            Stats
-          </Text>
-        </TouchableOpacity>
-      </View>
+      {/* Tabs */}
+<View style={styles.tabs}>
+  <TouchableOpacity
+    style={[styles.tab, activeTab === 'chat' && styles.tabActive]}
+    onPress={() => setActiveTab('chat')}
+  >
+    <Text style={[styles.tabText, activeTab === 'chat' && styles.tabTextActive]}>
+      Chat
+    </Text>
+  </TouchableOpacity>
+
+  <TouchableOpacity
+    style={[styles.tab, activeTab === 'facts' && styles.tabActive]}
+    onPress={() => setActiveTab('facts')}
+  >
+    <Text style={[styles.tabText, activeTab === 'facts' && styles.tabTextActive]}>
+      Play-by-Play
+    </Text>
+  </TouchableOpacity>
+
+  <TouchableOpacity
+    style={[styles.tab, activeTab === 'stats' && styles.tabActive]}
+    onPress={() => setActiveTab('stats')}
+  >
+    <Text style={[styles.tabText, activeTab === 'stats' && styles.tabTextActive]}>
+      Stats
+    </Text>
+  </TouchableOpacity>
+
+  <TouchableOpacity
+    style={[styles.tab, activeTab === 'lineups' && styles.tabActive]}
+    onPress={() => setActiveTab('lineups')}
+  >
+    <Text style={[styles.tabText, activeTab === 'lineups' && styles.tabTextActive]}>
+      Lineups
+    </Text>
+  </TouchableOpacity>
+</View>
+
+
 
       {/* Chat Tab */}
       {activeTab === 'chat' && (
@@ -459,6 +617,26 @@ export default function DemoMatch() {
           </View>
         </ScrollView>
       )}
+      {activeTab === 'facts' && (
+  <ScrollView style={styles.tabContent} showsVerticalScrollIndicator={false}>
+    <View style={styles.eventsContainer}>
+      
+      {events.map(renderEvent)}
+    </View>
+  </ScrollView>
+)}
+
+{activeTab === 'lineups' && (
+  <ScrollView style={styles.tabContent} showsVerticalScrollIndicator={false}>
+    <View style={{ padding: 20 }}>
+      {renderLineupsSimple('home')}
+      <View style={{ height: 20 }} />
+      {renderLineupsSimple('away')}
+      <View style={{ height: 40 }} />
+    </View>
+  </ScrollView>
+)}
+
     </View>
   );
 }
@@ -829,6 +1007,86 @@ const styles = StyleSheet.create({
     flex: 1,
     marginHorizontal: 16,
   },
+  eventsContainer: {
+  padding: 20,
+},
+eventCard: {
+  flexDirection: 'row',
+  alignItems: 'center',
+  backgroundColor: '#2C2C2E',
+  padding: 12,
+  borderRadius: 10,
+  marginBottom: 10,
+  gap: 12,
+},
+eventMinute: {
+  fontSize: 14,
+  fontWeight: '800',
+  color: '#0066CC',
+  width: 40,
+},
+eventText: {
+  fontSize: 14,
+  color: '#FFF',
+  flex: 1,
+},
+
+lineupsBlock: {
+  backgroundColor: '#2C2C2E',
+  borderRadius: 12,
+  padding: 14,
+},
+lineupsHeaderRow: {
+  flexDirection: 'row',
+  justifyContent: 'space-between',
+  alignItems: 'center',
+  marginBottom: 10,
+},
+lineupsTeamName: {
+  fontSize: 16,
+  fontWeight: '800',
+  color: '#FFF',
+},
+lineupsFormation: {
+  fontSize: 12,
+  fontWeight: '800',
+  color: '#0066CC',
+},
+lineupsGroup: {
+  marginTop: 10,
+},
+lineupsGroupLabel: {
+  fontSize: 12,
+  fontWeight: '800',
+  color: '#999',
+  marginBottom: 6,
+},
+lineupsPlayerRow: {
+  flexDirection: 'row',
+  alignItems: 'center',
+  paddingVertical: 6,
+  borderBottomWidth: 1,
+  borderBottomColor: 'rgba(255,255,255,0.06)',
+},
+lineupsNumber: {
+  width: 34,
+  fontSize: 12,
+  fontWeight: '800',
+  color: '#FFF',
+},
+lineupsName: {
+  flex: 1,
+  fontSize: 13,
+  fontWeight: '700',
+  color: '#FFF',
+},
+lineupsPos: {
+  width: 44,
+  textAlign: 'right',
+  fontSize: 12,
+  fontWeight: '700',
+  color: '#999',
+},
   statLabel: {
     fontSize: 13,
     color: '#999',

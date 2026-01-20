@@ -7,46 +7,20 @@
 
 import { Ionicons } from '@expo/vector-icons';
 import { router, useLocalSearchParams } from 'expo-router';
-import {
-  Timestamp,
-  addDoc,
-  collection,
-  doc,
-  onSnapshot,
-  orderBy,
-  query,
-  updateDoc
-} from 'firebase/firestore';
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
-  Animated,
   FlatList,
-  KeyboardAvoidingView,
-  Platform,
-  Pressable,
+  Image,
+  SafeAreaView,
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   TouchableOpacity,
   View
 } from 'react-native';
-import { useAuth } from '../../context/AuthContext';
-import { db } from '../../firebaseConfig';
 
 type TabType = 'chat' | 'stats' | 'facts' | 'lineups';
-
-interface Message {
-  id: string;
-  text: string;
-  username: string;
-  userId: string;
-  matchMinute: number;
-  reactions: Record<string, { count: number; userIds: string[] }>;
-  replyTo?: string;
-  timestamp: any;
-}
 
 interface MatchData {
   id: number;
@@ -57,6 +31,8 @@ interface MatchData {
   awayScore: number;
   minute: string;
   status: string;
+  homeTeamId: number;
+  awayTeamId: number;
   homeLogo?: string;
   awayLogo?: string;
 }
@@ -72,12 +48,54 @@ interface Stats {
   redCards: { home: number; away: number };
 }
 
-interface Event {
+type PlayByPlayEventType =
+  | 'GOAL'
+  | 'YELLOW_CARD'
+  | 'RED_CARD'
+  | 'SUBSTITUTION'
+  | 'CORNER'
+  | 'SHOT'
+  | 'SHOT_ON_TARGET'
+  | 'SHOT_OFF_TARGET'
+  | 'BLOCKED_SHOT'
+  | 'SAVE'
+  | 'OFFSIDE'
+  | 'FOUL'
+  | 'VAR'
+  | 'START_1H'
+  | 'HT'
+  | 'START_2H'
+  | 'FT';
+
+interface PlayByPlayDetails {
+  scorer?: string;
+  assist?: string;
+  score_home?: number;
+  score_away?: number;
+  player?: string;
+  reason?: string;
+  playerOn?: string;
+  playerOff?: string;
+  cornerSide?: string;
+  shooter?: string;
+  assistedBy?: string;
+  distance?: string | number;
+  bodyPart?: string;
+  goalkeeper?: string;
+  playerFouled?: string;
+  varDecision?: string;
+}
+
+interface PlayByPlayEvent {
+  id: string;
   minute: number;
-  type: 'goal' | 'yellow' | 'red' | 'substitution' | 'period';
-  team: 'home' | 'away';
-  player: string;
-  text: string;
+  extraMinute?: number;
+  timestamp: string | number;
+  team: 'home' | 'away' | null;
+  type: PlayByPlayEventType;
+  title: string;
+  description: string;
+  details: PlayByPlayDetails;
 }
 
 interface Lineup {
@@ -90,9 +108,395 @@ interface Lineup {
   }>;
 }
 
+const TEAM_COLORS = {
+  home: '#2F80ED',
+  away: '#FF3B30',
+  neutral: '#8E8E93',
+};
+
+const getTeamAbbreviation = (teamName?: string) => {
+  if (!teamName) return 'TBD';
+  const words = teamName.split(' ').filter(Boolean);
+  if (words.length === 1) {
+    return words[0].slice(0, 3).toUpperCase();
+  }
+  return words
+    .map(word => word[0])
+    .join('')
+    .slice(0, 3)
+    .toUpperCase();
+};
+
+const getTeamName = (team: PlayByPlayEvent['team'], matchData: MatchData | null) => {
+  if (!matchData || !team) return 'Unknown';
+  return team === 'home' ? matchData.home : matchData.away;
+};
+
+const getEventTitle = (type: PlayByPlayEventType) => {
+  switch (type) {
+    case 'GOAL':
+      return 'Goal';
+    case 'YELLOW_CARD':
+      return 'Yellow Card';
+    case 'RED_CARD':
+      return 'Red Card';
+    case 'SUBSTITUTION':
+      return 'Substitution';
+    case 'CORNER':
+      return 'Corner';
+    case 'SHOT_ON_TARGET':
+      return 'Shot on Target';
+    case 'SHOT_OFF_TARGET':
+      return 'Shot Off Target';
+    case 'BLOCKED_SHOT':
+      return 'Shot Blocked';
+    case 'SAVE':
+      return 'Save';
+    case 'OFFSIDE':
+      return 'Offside';
+    case 'FOUL':
+      return 'Foul';
+    case 'VAR':
+      return 'VAR';
+    case 'START_1H':
+      return 'Kickoff';
+    case 'HT':
+      return 'Half-time';
+    case 'START_2H':
+      return 'Second Half';
+    case 'FT':
+      return 'Full-time';
+    case 'SHOT':
+    default:
+      return 'Shot';
+  }
+};
+
+const formatEventDescription = (event: PlayByPlayEvent, matchData: MatchData | null) => {
+  const teamName = getTeamName(event.team, matchData);
+  const details = event.details;
+
+  switch (event.type) {
+    case 'GOAL': {
+      const scorer = details.scorer || 'Unknown scorer';
+      const assist = details.assist ? ` Assisted by ${details.assist}.` : '';
+      return `Goal! ${scorer} scores for ${teamName}.${assist}`;
+    }
+    case 'SUBSTITUTION': {
+      const on = details.playerOn || 'Substitution';
+      const off = details.playerOff || 'player';
+      return `Substitution, ${teamName}. ${on} replaces ${off}.`;
+    }
+    case 'CORNER':
+      return `Corner, ${teamName}.`;
+    case 'SHOT_ON_TARGET': {
+      const shooter = details.shooter || 'Shot';
+      const keeper = details.goalkeeper ? ` Saved by ${details.goalkeeper}.` : '';
+      return `Shot on target by ${shooter} (${teamName}).${keeper}`;
+    }
+    case 'SHOT_OFF_TARGET': {
+      const shooter = details.shooter || 'Shot';
+      return `Shot off target by ${shooter} (${teamName}).`;
+    }
+    case 'BLOCKED_SHOT': {
+      const shooter = details.shooter || 'Shot';
+      return `Shot blocked by ${shooter} (${teamName}).`;
+    }
+    case 'SHOT': {
+      const shooter = details.shooter || 'Shot';
+      return `Shot by ${shooter} (${teamName}).`;
+    }
+    case 'SAVE': {
+      const keeper = details.goalkeeper || 'Goalkeeper';
+      const shooter = details.shooter ? ` to deny ${details.shooter}` : '';
+      return `Save by ${keeper}${shooter}.`;
+    }
+    case 'YELLOW_CARD': {
+      const player = details.player || 'Player';
+      const reason = details.reason ? ` (${details.reason})` : '';
+      return `Yellow card to ${player} (${teamName}).${reason}`;
+    }
+    case 'RED_CARD': {
+      const player = details.player || 'Player';
+      const reason = details.reason ? ` (${details.reason})` : '';
+      return `Red card to ${player} (${teamName}).${reason}`;
+    }
+    case 'OFFSIDE': {
+      const player = details.player || 'Player';
+      return `Offside, ${player} (${teamName}).`;
+    }
+    case 'FOUL': {
+      const player = details.player || 'Player';
+      const fouled = details.playerFouled ? ` on ${details.playerFouled}` : '';
+      return `Foul by ${player} (${teamName})${fouled}.`;
+    }
+    case 'VAR': {
+      const decision = details.varDecision || 'decision pending';
+      return `VAR check: ${decision}.`;
+    }
+    case 'START_1H':
+      return 'First half begins.';
+    case 'HT':
+      return 'Half-time in this match.';
+    case 'START_2H':
+      return 'Second half begins.';
+    case 'FT':
+      return 'Full-time.';
+    default:
+      return event.title;
+  }
+};
+
+const buildPlayByPlayEvents = (rawEvents: any[], matchData: MatchData): PlayByPlayEvent[] => {
+  const sorted = [...rawEvents].sort((a, b) => {
+    const minuteDiff = (a.time?.elapsed || 0) - (b.time?.elapsed || 0);
+    if (minuteDiff !== 0) return minuteDiff;
+    return (a.time?.extra || 0) - (b.time?.extra || 0);
+  });
+
+  let homeScore = 0;
+  let awayScore = 0;
+
+  return sorted.map((event, index) => {
+    const team =
+      event.team?.id === matchData.homeTeamId
+        ? 'home'
+        : event.team?.id === matchData.awayTeamId
+          ? 'away'
+          : null;
+
+    const normalizedType = (() => {
+      if (event.type === 'Goal') return 'GOAL';
+      if (event.type === 'Card' && event.detail?.includes('Yellow')) return 'YELLOW_CARD';
+      if (event.type === 'Card' && event.detail?.includes('Red')) return 'RED_CARD';
+      if (event.type === 'subst') return 'SUBSTITUTION';
+      if (event.type === 'Corner' || event.detail?.toLowerCase().includes('corner')) return 'CORNER';
+      if (event.type === 'Var' || event.detail?.toLowerCase().includes('var')) return 'VAR';
+      if (event.type === 'Offside' || event.detail?.toLowerCase().includes('offside')) return 'OFFSIDE';
+      if (event.type === 'Foul' || event.detail?.toLowerCase().includes('foul')) return 'FOUL';
+      if (event.detail?.toLowerCase().includes('save')) return 'SAVE';
+      if (event.detail?.toLowerCase().includes('blocked shot')) return 'BLOCKED_SHOT';
+      if (event.detail?.toLowerCase().includes('on target')) return 'SHOT_ON_TARGET';
+      if (event.detail?.toLowerCase().includes('off target')) return 'SHOT_OFF_TARGET';
+      if (event.type === 'Shot') return 'SHOT';
+      if (event.type === 'Match' && event.detail?.toLowerCase().includes('1st')) return 'START_1H';
+      if (event.type === 'Match' && event.detail?.toLowerCase().includes('half time')) return 'HT';
+      if (event.type === 'Match' && event.detail?.toLowerCase().includes('2nd')) return 'START_2H';
+      if (event.type === 'Match' && event.detail?.toLowerCase().includes('full')) return 'FT';
+      return 'SHOT';
+    })();
+
+    const isShotLike = event.type === 'Shot' || event.detail?.toLowerCase().includes('shot');
+    const details: PlayByPlayDetails = {
+      player: event.player?.name,
+      reason: event.detail,
+      playerOn: event.type === 'subst' ? event.player?.name : undefined,
+      playerOff: event.type === 'subst' ? event.assist?.name : undefined,
+      scorer: event.type === 'Goal' ? event.player?.name : undefined,
+      assist: event.type === 'Goal' ? event.assist?.name : undefined,
+      shooter: isShotLike ? event.player?.name : undefined,
+      assistedBy: isShotLike ? event.assist?.name : undefined,
+      goalkeeper: normalizedType === 'SAVE' ? event.player?.name : undefined,
+      playerFouled: event.assist?.name,
+      varDecision: event.type === 'Var' ? event.detail : undefined,
+    };
+
+    if (normalizedType === 'GOAL') {
+      const isOwnGoal = event.detail?.toLowerCase().includes('own goal');
+      const scoringTeam = isOwnGoal ? (team === 'home' ? 'away' : 'home') : team;
+      if (scoringTeam === 'home') homeScore += 1;
+      if (scoringTeam === 'away') awayScore += 1;
+      details.score_home = homeScore;
+      details.score_away = awayScore;
+    }
+
+    if (normalizedType === 'SAVE' && event.assist?.name && !details.shooter) {
+      details.shooter = event.assist.name;
+    }
+
+    const playByPlayEvent: PlayByPlayEvent = {
+      id: event.id
+        ? `${event.id}`
+        : `${event.time?.elapsed || 0}-${event.time?.extra || 0}-${event.type}-${event.player?.id || event.player?.name || 'event'}-${index}`,
+      minute: event.time?.elapsed || 0,
+      extraMinute: event.time?.extra || undefined,
+      timestamp: event.time?.elapsed ? event.time.elapsed * 60 * 1000 : Date.now(),
+      team,
+      type: normalizedType,
+      title: getEventTitle(normalizedType),
+      description: '',
+      details,
+    };
+
+    playByPlayEvent.description = formatEventDescription(playByPlayEvent, matchData);
+
+    return playByPlayEvent;
+  });
+};
+
+const LiveStatsHeader = ({
+  matchData,
+  stats,
+  latestMinute,
+  isLive,
+}: {
+  matchData: MatchData;
+  stats: Stats | null;
+  latestMinute: number;
+  isLive: boolean;
+}) => {
+  const homeAbbr = getTeamAbbreviation(matchData.home);
+  const awayAbbr = getTeamAbbreviation(matchData.away);
+
+  return (
+    <View style={styles.liveStatsHeader}>
+      <View style={styles.liveStatsTopRow}>
+        <Text style={styles.liveStatsTitle}>LIVE STATS</Text>
+        {isLive && (
+          <View style={styles.livePill}>
+            <Text style={styles.livePillText}>LIVE</Text>
+            <Text style={styles.livePillMinute}>{latestMinute}'</Text>
+          </View>
+        )}
+      </View>
+
+      <View style={styles.liveStatsTeamsRow}>
+        <View style={styles.liveStatsTeam}>
+          {matchData.homeLogo ? (
+            <Image source={{ uri: matchData.homeLogo }} style={styles.teamLogo} />
+          ) : (
+            <View style={[styles.teamBadge, { backgroundColor: TEAM_COLORS.home }]}>
+              <Text style={styles.teamBadgeText}>{homeAbbr}</Text>
+            </View>
+          )}
+          <Text style={styles.teamLabel}>{homeAbbr}</Text>
+        </View>
+        <View style={styles.liveStatsTeam}>
+          {matchData.awayLogo ? (
+            <Image source={{ uri: matchData.awayLogo }} style={styles.teamLogo} />
+          ) : (
+            <View style={[styles.teamBadge, { backgroundColor: TEAM_COLORS.away }]}>
+              <Text style={styles.teamBadgeText}>{awayAbbr}</Text>
+            </View>
+          )}
+          <Text style={styles.teamLabel}>{awayAbbr}</Text>
+        </View>
+      </View>
+
+      <View style={styles.liveStatsRows}>
+        <View style={styles.liveStatsRow}>
+          <Text style={styles.liveStatsValue}>{stats?.shots.home ?? 0}</Text>
+          <Text style={styles.liveStatsLabel}>Shots</Text>
+          <Text style={styles.liveStatsValue}>{stats?.shots.away ?? 0}</Text>
+        </View>
+        <View style={styles.liveStatsRow}>
+          <Text style={styles.liveStatsValue}>{stats?.shotsOnTarget.home ?? 0}</Text>
+          <Text style={styles.liveStatsLabel}>Shots on Target</Text>
+          <Text style={styles.liveStatsValue}>{stats?.shotsOnTarget.away ?? 0}</Text>
+        </View>
+        <View style={styles.liveStatsRow}>
+          <Text style={styles.liveStatsValue}>{stats?.corners.home ?? 0}</Text>
+          <Text style={styles.liveStatsLabel}>Corners</Text>
+          <Text style={styles.liveStatsValue}>{stats?.corners.away ?? 0}</Text>
+        </View>
+        {(stats?.possession.home || stats?.possession.away) && (
+          <View style={styles.liveStatsRow}>
+            <Text style={styles.liveStatsValue}>{stats?.possession.home ?? 0}%</Text>
+            <Text style={styles.liveStatsLabel}>Possession</Text>
+            <Text style={styles.liveStatsValue}>{stats?.possession.away ?? 0}%</Text>
+          </View>
+        )}
+      </View>
+    </View>
+  );
+};
+
+const PlayByPlayRow = ({
+  event,
+  matchData,
+}: {
+  event: PlayByPlayEvent;
+  matchData: MatchData;
+}) => {
+  const minuteLabel = event.extraMinute ? `${event.minute}+${event.extraMinute}'` : `${event.minute}'`;
+  const teamName = getTeamName(event.team, matchData);
+  const teamAbbr = getTeamAbbreviation(teamName);
+  const teamColor = event.team ? TEAM_COLORS[event.team] : TEAM_COLORS.neutral;
+  const isGoal = event.type === 'GOAL';
+  const scoreline =
+    isGoal && event.details.score_home !== undefined && event.details.score_away !== undefined
+      ? `${matchData.home} ${event.details.score_home}–${event.details.score_away} ${matchData.away}`
+      : null;
+
+  const iconName = (() => {
+    switch (event.type) {
+      case 'GOAL':
+        return 'football';
+      case 'YELLOW_CARD':
+        return 'warning';
+      case 'RED_CARD':
+        return 'close-circle';
+      case 'SUBSTITUTION':
+        return 'swap-horizontal';
+      case 'CORNER':
+        return 'flag';
+      case 'SHOT_ON_TARGET':
+        return 'flash';
+      case 'SHOT_OFF_TARGET':
+        return 'arrow-forward-circle';
+      case 'BLOCKED_SHOT':
+        return 'shield';
+      case 'SAVE':
+        return 'hand-left';
+      case 'OFFSIDE':
+        return 'walk';
+      case 'FOUL':
+        return 'alert-circle';
+      case 'VAR':
+        return 'search';
+      case 'START_1H':
+      case 'START_2H':
+        return 'play';
+      case 'HT':
+      case 'FT':
+        return 'stop-circle';
+      case 'SHOT':
+      default:
+        return 'radio-button-on';
+    }
+  })();
+
+  return (
+    <View style={[styles.playByPlayRow, isGoal && styles.goalRow]}>
+      <View style={styles.minuteBadge}>
+        <Text style={styles.minuteText}>{minuteLabel}</Text>
+      </View>
+      <View style={[styles.eventIcon, { borderColor: teamColor }]}>
+        <Ionicons name={iconName as any} size={16} color={teamColor} />
+      </View>
+      <View style={styles.eventContent}>
+        <View style={styles.eventMetaRow}>
+          <View style={[styles.teamIndicator, { backgroundColor: teamColor }]}>
+            <Text style={styles.teamIndicatorText}>{teamAbbr}</Text>
+          </View>
+          <Text style={styles.eventTitle}>{event.title}</Text>
+        </View>
+        <Text style={styles.eventDescription}>{event.description}</Text>
+        {scoreline && <Text style={styles.scorelineText}>{scoreline}</Text>}
+      </View>
+    </View>
+  );
+};
+
+const JumpToLiveButton = ({ onPress }: { onPress: () => void }) => (
+  <TouchableOpacity style={styles.jumpToLiveButton} onPress={onPress}>
+    <Ionicons name="caret-down" size={16} color="#FFF" />
+    <Text style={styles.jumpToLiveText}>Jump to live</Text>
+  </TouchableOpacity>
+);
+
 export default function LiveMatchChat() {
   const { id } = useLocalSearchParams(); // Real match ID from API
-  const { userProfile } = useAuth();
   
   // Tab state
   const [activeTab, setActiveTab] = useState<TabType>('chat');
@@ -100,23 +504,16 @@ export default function LiveMatchChat() {
   // Match data state
   const [matchData, setMatchData] = useState<MatchData | null>(null);
   const [stats, setStats] = useState<Stats | null>(null);
-  const [events, setEvents] = useState<Event[]>([]);
+  const [playByPlayEvents, setPlayByPlayEvents] = useState<PlayByPlayEvent[]>([]);
   const [lineups, setLineups] = useState<{ home: Lineup | null; away: Lineup | null }>({ home: null, away: null });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   
-  // Chat state - scoped to THIS match only
-  const [messages, setMessages] = useState<Message[]>([]);
-  const [messageText, setMessageText] = useState('');
-  const [replyTo, setReplyTo] = useState<string | null>(null);
-  const [showContextMenu, setShowContextMenu] = useState<string | null>(null);
   const [currentMatchMinute, setCurrentMatchMinute] = useState(0);
+  const [isPinnedToBottom, setIsPinnedToBottom] = useState(true);
+  const [showJumpToLive, setShowJumpToLive] = useState(false);
   
-  const flatListRef = useRef<FlatList>(null);
-  const lastTapRef = useRef<{ [key: string]: number }>({});
-  const replyAnimValue = useRef(new Animated.Value(0)).current;
-
-  const EMOJI_REACTIONS = ['❤️', '🔥', '😂', '😢', '👎', '👏', '🎉'];
+  const playByPlayListRef = useRef<FlatList<PlayByPlayEvent>>(null);
 
   // ============================================
   // FETCH MATCH DATA FROM API (SCOPED BY ID)
@@ -131,9 +528,24 @@ export default function LiveMatchChat() {
     
     fetchMatchData();
     fetchStats();
-    fetchEvents();
     fetchLineups();
   }, [id]);
+
+  useEffect(() => {
+    if (!id || !matchData) return;
+    fetchEvents(matchData);
+  }, [id, matchData]);
+
+  useEffect(() => {
+    if (!id || !matchData) return;
+    const interval = setInterval(() => {
+      fetchMatchData();
+      fetchStats();
+      fetchEvents(matchData);
+    }, 30000);
+
+    return () => clearInterval(interval);
+  }, [id, matchData]);
 
   const fetchMatchData = async () => {
     try {
@@ -161,6 +573,8 @@ export default function LiveMatchChat() {
           awayScore: fixture.goals.away || 0,
           minute: fixture.fixture.status.elapsed ? `${fixture.fixture.status.elapsed}'` : fixture.fixture.status.short,
           status: fixture.fixture.status.long,
+          homeTeamId: fixture.teams.home.id,
+          awayTeamId: fixture.teams.away.id,
           homeLogo: fixture.teams.home.logo,
           awayLogo: fixture.teams.away.logo,
         });
@@ -245,7 +659,7 @@ export default function LiveMatchChat() {
     }
   };
 
-  const fetchEvents = async () => {
+  const fetchEvents = async (currentMatch: MatchData) => {
     try {
       const response = await fetch(
         `https://v3.football.api-sports.io/fixtures/events?fixture=${id}`,
@@ -260,25 +674,10 @@ export default function LiveMatchChat() {
       const data = await response.json();
       
       if (data.response && data.response.length > 0) {
-        const transformedEvents = data.response.map((event: any) => {
-          const getEventType = (type: string, detail: string): Event['type'] => {
-            if (type === 'Goal') return 'goal';
-            if (type === 'Card' && detail === 'Yellow Card') return 'yellow';
-            if (type === 'Card' && detail === 'Red Card') return 'red';
-            if (type === 'subst') return 'substitution';
-            return 'period';
-          };
-          
-          return {
-            minute: event.time.elapsed,
-            type: getEventType(event.type, event.detail),
-            team: event.team.id === matchData?.id ? 'home' : 'away',
-            player: event.player.name,
-            text: event.detail,
-          };
-        });
-        
-        setEvents(transformedEvents);
+        const normalizedEvents = buildPlayByPlayEvents(data.response, currentMatch);
+        setPlayByPlayEvents(normalizedEvents);
+      } else {
+        setPlayByPlayEvents([]);
       }
     } catch (err) {
       console.error('Error fetching events:', err);
@@ -328,144 +727,6 @@ export default function LiveMatchChat() {
   };
 
   // ============================================
-  // FIREBASE CHAT - SCOPED BY MATCH ID
-  // ============================================
-  
-  useEffect(() => {
-    if (!id) return;
-    
-    // Real-time listener for THIS match's messages only
-    const messagesRef = collection(db, 'matches', id as string, 'messages');
-    const q = query(messagesRef, orderBy('timestamp', 'asc'));
-    
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const msgs = snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
-      })) as Message[];
-      
-      setMessages(msgs);
-    }, (error) => {
-      console.error('Error listening to messages:', error);
-    });
-    
-    return () => unsubscribe();
-  }, [id]);
-
-  // ============================================
-  // CHAT INTERACTIONS
-  // ============================================
-  
-  useEffect(() => {
-    Animated.timing(replyAnimValue, {
-      toValue: replyTo ? 1 : 0,
-      duration: 200,
-      useNativeDriver: true,
-    }).start();
-  }, [replyTo]);
-
-  const sendMessage = async () => {
-    if (!messageText.trim() || !id) return;
-
-    try {
-      const messagesRef = collection(db, 'matches', id as string, 'messages');
-      
-      await addDoc(messagesRef, {
-        text: messageText,
-        username: userProfile?.username || 'Guest',
-        userId: userProfile?.uid || 'guest',
-        matchMinute: currentMatchMinute,
-        timestamp: Timestamp.now(),
-        reactions: {},
-        replyTo: replyTo || null,
-      });
-      
-      setMessageText('');
-      setReplyTo(null);
-    } catch (error) {
-      console.error('Error sending message:', error);
-    }
-  };
-
-  const handleDoubleTap = async (messageId: string) => {
-    if (!id) return;
-    const currentUserId = userProfile?.uid || 'guest';
-    
-    try {
-      const message = messages.find(m => m.id === messageId);
-      if (!message) return;
-      
-      const reactions = { ...message.reactions };
-      const heartReaction = reactions['❤️'] || { count: 0, userIds: [] };
-      
-      if (heartReaction.userIds.includes(currentUserId)) {
-        heartReaction.count--;
-        heartReaction.userIds = heartReaction.userIds.filter(id => id !== currentUserId);
-        
-        if (heartReaction.count === 0) {
-          delete reactions['❤️'];
-        } else {
-          reactions['❤️'] = heartReaction;
-        }
-      } else {
-        heartReaction.count++;
-        heartReaction.userIds.push(currentUserId);
-        reactions['❤️'] = heartReaction;
-      }
-      
-      const messageRef = doc(db, 'matches', id as string, 'messages', messageId);
-      await updateDoc(messageRef, { reactions });
-    } catch (error) {
-      console.error('Error updating reaction:', error);
-    }
-  };
-
-  const handleAddReaction = async (messageId: string, emoji: string) => {
-    if (!id) return;
-    const currentUserId = userProfile?.uid || 'guest';
-    
-    try {
-      const message = messages.find(m => m.id === messageId);
-      if (!message) return;
-      
-      const reactions = { ...message.reactions };
-      const emojiReaction = reactions[emoji] || { count: 0, userIds: [] };
-      
-      if (emojiReaction.userIds.includes(currentUserId)) {
-        emojiReaction.count--;
-        emojiReaction.userIds = emojiReaction.userIds.filter(id => id !== currentUserId);
-        
-        if (emojiReaction.count === 0) {
-          delete reactions[emoji];
-        } else {
-          reactions[emoji] = emojiReaction;
-        }
-      } else {
-        emojiReaction.count++;
-        emojiReaction.userIds.push(currentUserId);
-        reactions[emoji] = emojiReaction;
-      }
-      
-      const messageRef = doc(db, 'matches', id as string, 'messages', messageId);
-      await updateDoc(messageRef, { reactions });
-      
-      setShowContextMenu(null);
-    } catch (error) {
-      console.error('Error updating reaction:', error);
-    }
-  };
-
-  const handleReply = (message: Message) => {
-    setReplyTo(message.id);
-    setShowContextMenu(null);
-  };
-
-  const getReplyToMessage = (replyToId: string | undefined): Message | null => {
-    if (!replyToId) return null;
-    return messages.find(m => m.id === replyToId) || null;
-  };
-
-  // ============================================
   // RENDER FUNCTIONS
   // ============================================
   
@@ -489,35 +750,46 @@ export default function LiveMatchChat() {
     );
   };
 
-  const renderEvent = (event: Event, index: number) => {
-    const getEventIcon = () => {
-      switch (event.type) {
-        case 'goal': return 'football';
-        case 'yellow': return 'warning';
-        case 'red': return 'close-circle';
-        case 'substitution': return 'swap-horizontal';
-        default: return 'time';
-      }
-    };
+  const latestMinute = useMemo(() => {
+    if (playByPlayEvents.length > 0) {
+      return playByPlayEvents[playByPlayEvents.length - 1].minute;
+    }
+    return currentMatchMinute;
+  }, [playByPlayEvents, currentMatchMinute]);
 
-    const getEventColor = () => {
-      switch (event.type) {
-        case 'goal': return '#34C759';
-        case 'yellow': return '#FFD60A';
-        case 'red': return '#FF3B30';
-        case 'substitution': return '#0066CC';
-        default: return '#666';
-      }
-    };
-
+  const isLive = useMemo(() => {
+    if (!matchData) return false;
+    const status = matchData.status.toLowerCase();
     return (
-      <View key={index} style={styles.eventCard}>
-        <Text style={styles.eventMinute}>{event.minute}'</Text>
-        <Ionicons name={getEventIcon() as any} size={20} color={getEventColor()} />
-        <Text style={styles.eventText}>{event.text}</Text>
-      </View>
+      status.includes('half') ||
+      status.includes('live') ||
+      status.includes('in play') ||
+      status.includes('kick')
     );
+  }, [matchData]);
+
+  const handlePlayByPlayScroll = (event: any) => {
+    const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
+    const distanceFromBottom = contentSize.height - (contentOffset.y + layoutMeasurement.height);
+    const pinned = distanceFromBottom < 80;
+    setIsPinnedToBottom(pinned);
+    setShowJumpToLive(!pinned);
   };
+
+  const scrollToLive = () => {
+    playByPlayListRef.current?.scrollToEnd({ animated: true });
+    setIsPinnedToBottom(true);
+    setShowJumpToLive(false);
+  };
+
+  useEffect(() => {
+    if (playByPlayEvents.length === 0) return;
+    if (isPinnedToBottom) {
+      requestAnimationFrame(() => {
+        playByPlayListRef.current?.scrollToEnd({ animated: true });
+      });
+    }
+  }, [playByPlayEvents, isPinnedToBottom]);
 
   const renderLineup = (team: 'home' | 'away') => {
     const lineup = team === 'home' ? lineups.home : lineups.away;
@@ -624,7 +896,7 @@ export default function LiveMatchChat() {
   // ============================================
   
   return (
-    <View style={styles.container}>
+    <SafeAreaView style={styles.container}>
       {/* Header */}
       <View style={styles.header}>
         <TouchableOpacity onPress={() => router.back()}>
@@ -658,7 +930,7 @@ export default function LiveMatchChat() {
           onPress={() => setActiveTab('chat')}
         >
           <Text style={[styles.tabText, activeTab === 'chat' && styles.tabTextActive]}>
-            Chat
+            Play-by-Play
           </Text>
         </TouchableOpacity>
         <TouchableOpacity
@@ -689,194 +961,39 @@ export default function LiveMatchChat() {
 
       {/* Tab Content */}
       {activeTab === 'chat' && (
-        <KeyboardAvoidingView
-          style={styles.chatContainer}
-          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-          keyboardVerticalOffset={100}
-        >
+        <View style={styles.playByPlayContainer}>
           <FlatList
-            ref={flatListRef}
-            data={messages}
+            ref={playByPlayListRef}
+            data={playByPlayEvents}
             keyExtractor={(item) => item.id}
-            renderItem={({ item }: { item: Message }) => {
-              const isCurrentUser = item.userId === (userProfile?.uid || 'guest');
-              const replyToMsg = getReplyToMessage(item.replyTo);
-              const currentUserId = userProfile?.uid || 'guest';
-              
-              return (
-                <View style={[
-                  styles.messageContainer,
-                  isCurrentUser ? styles.messageContainerRight : styles.messageContainerLeft
-                ]}>
-                  <Pressable
-                    onLongPress={() => setShowContextMenu(item.id)}
-                    delayLongPress={400}
-                    onPressIn={() => {
-                      const now = Date.now();
-                      if (lastTapRef.current[item.id] && (now - lastTapRef.current[item.id]) < 300) {
-                        handleDoubleTap(item.id);
-                        delete lastTapRef.current[item.id];
-                      } else {
-                        lastTapRef.current[item.id] = now;
-                      }
-                    }}
-                  >
-                    <View style={[
-                      styles.messageBubble,
-                      isCurrentUser ? styles.messageBubbleRight : styles.messageBubbleLeft
-                    ]}>
-                      <View style={styles.messageHeader}>
-                        {!isCurrentUser && (
-                          <Text style={styles.bubbleUsername}>{item.username}</Text>
-                        )}
-                        <Text style={[
-                          styles.matchMinute,
-                          isCurrentUser && styles.matchMinuteRight
-                        ]}>
-                          {item.matchMinute}'
-                        </Text>
-                      </View>
-                      
-                      {replyToMsg && (
-                        <View style={styles.replyIndicator}>
-                          <Ionicons name="return-down-forward" size={10} color="#666" />
-                          <Text style={styles.replyText} numberOfLines={1}>
-                            @{replyToMsg.username}: {replyToMsg.text}
-                          </Text>
-                        </View>
-                      )}
-                      
-                      <Text style={styles.bubbleText}>{item.text}</Text>
-                    </View>
-                  </Pressable>
-                  
-                  {Object.keys(item.reactions || {}).length > 0 && (
-                    <View style={[
-                      styles.reactionsRow,
-                      isCurrentUser ? styles.reactionsRowRight : styles.reactionsRowLeft
-                    ]}>
-                      {Object.entries(item.reactions || {}).map(([emoji, data]: [string, { count: number; userIds: string[] }]) => {
-                        const hasReacted = data.userIds.includes(currentUserId);
-                        
-                        return (
-                          <TouchableOpacity
-                            key={emoji}
-                            style={[
-                              styles.reactionBubble,
-                              hasReacted && styles.reactionBubbleHighlighted
-                            ]}
-                            onPress={() => handleAddReaction(item.id, emoji)}
-                          >
-                            <Text style={styles.reactionEmoji}>{emoji}</Text>
-                            <Text style={[
-                              styles.reactionCount,
-                              hasReacted && styles.reactionCountHighlighted
-                            ]}>
-                              {data.count}
-                            </Text>
-                          </TouchableOpacity>
-                        );
-                      })}
-                    </View>
-                  )}
-                  
-                  {showContextMenu === item.id && (
-                    <View style={[
-                      styles.contextMenu,
-                      isCurrentUser ? styles.contextMenuRight : styles.contextMenuLeft
-                    ]}>
-                      <TouchableOpacity
-                        style={styles.contextMenuItem}
-                        onPress={() => handleReply(item)}
-                      >
-                        <Ionicons name="arrow-undo" size={16} color="#FFF" />
-                        <Text style={styles.contextMenuText}>Reply</Text>
-                      </TouchableOpacity>
-                      
-                      <View style={styles.contextMenuDivider} />
-                      
-                      <View style={styles.contextMenuEmojis}>
-                        {EMOJI_REACTIONS.map(emoji => {
-                          const hasReacted = item.reactions[emoji]?.userIds.includes(currentUserId);
-                          
-                          return (
-                            <TouchableOpacity
-                              key={emoji}
-                              style={[
-                                styles.contextMenuEmojiButton,
-                                hasReacted && styles.contextMenuEmojiButtonActive
-                              ]}
-                              onPress={() => handleAddReaction(item.id, emoji)}
-                            >
-                              <Text style={styles.contextMenuEmoji}>{emoji}</Text>
-                            </TouchableOpacity>
-                          );
-                        })}
-                      </View>
-                    </View>
-                  )}
-                </View>
-              );
-            }}
-            contentContainerStyle={styles.messagesList}
-            showsVerticalScrollIndicator={false}
-            onScrollBeginDrag={() => setShowContextMenu(null)}
-          />
-
-          <View style={styles.inputContainer}>
-            {replyTo && (
-              <Animated.View 
-                style={[
-                  styles.replyingTo,
-                  {
-                    opacity: replyAnimValue,
-                    transform: [{
-                      translateY: replyAnimValue.interpolate({
-                        inputRange: [0, 1],
-                        outputRange: [20, 0],
-                      })
-                    }]
-                  }
-                ]}
-              >
-                <View style={styles.replyingToContent}>
-                  <Ionicons name="return-down-forward" size={14} color="#0066CC" />
-                  <View style={styles.replyingToTextContainer}>
-                    <Text style={styles.replyingToUsername}>
-                      @{messages.find(m => m.id === replyTo)?.username}
-                    </Text>
-                    <Text style={styles.replyingToText} numberOfLines={1}>
-                      {messages.find(m => m.id === replyTo)?.text}
-                    </Text>
-                  </View>
-                </View>
-                <TouchableOpacity onPress={() => setReplyTo(null)}>
-                  <Ionicons name="close" size={18} color="#666" />
-                </TouchableOpacity>
-              </Animated.View>
+            renderItem={({ item }) => (
+              <PlayByPlayRow event={item} matchData={matchData} />
             )}
-            
-            <View style={styles.inputWrapper}>
-              <TextInput
-                style={styles.input}
-                placeholder="Say something..."
-                placeholderTextColor="#666"
-                value={messageText}
-                onChangeText={setMessageText}
-                onSubmitEditing={sendMessage}
-                multiline
-                maxLength={300}
+            ListHeaderComponent={
+              <LiveStatsHeader
+                matchData={matchData}
+                stats={stats}
+                latestMinute={latestMinute}
+                isLive={isLive}
               />
-              <TouchableOpacity 
-                style={[styles.sendButton, !messageText.trim() && styles.sendButtonDisabled]} 
-                onPress={sendMessage}
-                disabled={!messageText.trim()}
-              >
-                <Ionicons name="send" size={18} color="#FFF" />
-              </TouchableOpacity>
-            </View>
-          </View>
-        </KeyboardAvoidingView>
+            }
+            stickyHeaderIndices={[0]}
+            contentContainerStyle={styles.playByPlayList}
+            showsVerticalScrollIndicator={false}
+            onScroll={handlePlayByPlayScroll}
+            scrollEventThrottle={16}
+            initialNumToRender={12}
+            windowSize={6}
+            removeClippedSubviews
+            maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
+            ListEmptyComponent={
+              <View style={styles.centerContent}>
+                <Text style={styles.emptyText}>No match events yet</Text>
+              </View>
+            }
+          />
+          {showJumpToLive && <JumpToLiveButton onPress={scrollToLive} />}
+        </View>
       )}
 
       {activeTab === 'stats' && (
@@ -904,10 +1021,12 @@ export default function LiveMatchChat() {
 
       {activeTab === 'facts' && (
         <ScrollView style={styles.tabContent} showsVerticalScrollIndicator={false}>
-          {events.length > 0 ? (
+          {playByPlayEvents.length > 0 ? (
             <View style={styles.eventsContainer}>
               <Text style={styles.sectionTitle}>Match Events</Text>
-              {events.map(renderEvent)}
+              {playByPlayEvents.map(event => (
+                <PlayByPlayRow key={event.id} event={event} matchData={matchData} />
+              ))}
             </View>
           ) : (
             <View style={styles.centerContent}>
@@ -925,7 +1044,7 @@ export default function LiveMatchChat() {
           <View style={{ height: 40 }} />
         </ScrollView>
       )}
-    </View>
+    </SafeAreaView>
   );
 }
 
@@ -1065,235 +1184,191 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   
-  // Chat styles
-  chatContainer: {
+  // Play-by-play styles
+  playByPlayContainer: {
     flex: 1,
   },
-  messagesList: {
-    padding: 6,
-    paddingBottom: 6,
+  playByPlayList: {
+    paddingBottom: 80,
   },
-  messageContainer: {
-    marginBottom: 4,
-    maxWidth: '80%',
+  liveStatsHeader: {
+    backgroundColor: '#1F1F21',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#2F2F31',
   },
-  messageContainerLeft: {
-    alignSelf: 'flex-start',
-  },
-  messageContainerRight: {
-    alignSelf: 'flex-end',
-  },
-  messageBubble: {
-    borderRadius: 14,
-    padding: 6,
-    paddingHorizontal: 10,
-  },
-  messageBubbleLeft: {
-    backgroundColor: 'rgba(255, 255, 255, 0.1)',
-  },
-  messageBubbleRight: {
-    backgroundColor: '#0066CC',
-  },
-  messageHeader: {
+  liveStatsTopRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 3,
+    marginBottom: 10,
   },
-  bubbleUsername: {
+  liveStatsTitle: {
+    fontSize: 13,
+    fontWeight: '800',
+    letterSpacing: 1.2,
+    color: '#FFF',
+  },
+  livePill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FF3B30',
+    borderRadius: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    gap: 6,
+  },
+  livePillText: {
+    fontSize: 10,
+    fontWeight: '800',
+    color: '#FFF',
+  },
+  livePillMinute: {
     fontSize: 10,
     fontWeight: '700',
-    color: '#0066CC',
-    flex: 1,
-  },
-  matchMinute: {
-    fontSize: 9,
-    color: '#666',
-    fontWeight: '500',
-  },
-  matchMinuteRight: {
-    color: 'rgba(255,255,255,0.5)',
-  },
-  bubbleText: {
-    fontSize: 13,
     color: '#FFF',
-    lineHeight: 17,
   },
-  replyIndicator: {
+  liveStatsTeamsRow: {
     flexDirection: 'row',
-    alignItems: 'center',
-    gap: 3,
-    marginBottom: 3,
-    paddingBottom: 3,
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255,255,255,0.08)',
+    justifyContent: 'space-between',
+    marginBottom: 12,
   },
-  replyText: {
+  liveStatsTeam: {
+    alignItems: 'center',
+    gap: 4,
+  },
+  teamLogo: {
+    width: 28,
+    height: 28,
+    resizeMode: 'contain',
+  },
+  teamBadge: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  teamBadgeText: {
     fontSize: 10,
-    color: '#666',
-    fontStyle: 'italic',
-    flex: 1,
+    fontWeight: '800',
+    color: '#FFF',
   },
-  reactionsRow: {
+  teamLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: '#FFF',
+  },
+  liveStatsRows: {
+    gap: 8,
+  },
+  liveStatsRow: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 3,
-    marginTop: 3,
+    justifyContent: 'space-between',
+    alignItems: 'center',
   },
-  reactionsRowLeft: {
-    justifyContent: 'flex-start',
+  liveStatsValue: {
+    width: 60,
+    textAlign: 'center',
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#FFF',
   },
-  reactionsRowRight: {
-    justifyContent: 'flex-end',
+  liveStatsLabel: {
+    flex: 1,
+    textAlign: 'center',
+    fontSize: 12,
+    color: '#A0A0A0',
   },
-  reactionBubble: {
+  playByPlayRow: {
+    flexDirection: 'row',
+    gap: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: '#2C2C2E',
+    backgroundColor: '#1C1C1E',
+  },
+  goalRow: {
+    backgroundColor: 'rgba(47, 128, 237, 0.12)',
+  },
+  minuteBadge: {
+    minWidth: 44,
+    paddingVertical: 6,
+    paddingHorizontal: 8,
+    borderRadius: 16,
+    backgroundColor: '#2C2C2E',
+    alignItems: 'center',
+  },
+  minuteText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#FFF',
+  },
+  eventIcon: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+  },
+  eventContent: {
+    flex: 1,
+    gap: 4,
+  },
+  eventMetaRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'rgba(255, 255, 255, 0.12)',
-    borderRadius: 10,
+    gap: 8,
+  },
+  teamIndicator: {
     paddingHorizontal: 6,
     paddingVertical: 2,
-    gap: 2,
-    borderWidth: 1,
-    borderColor: 'transparent',
+    borderRadius: 10,
   },
-  reactionBubbleHighlighted: {
-    backgroundColor: 'rgba(0, 102, 204, 0.25)',
-    borderColor: '#0066CC',
-  },
-  reactionEmoji: {
-    fontSize: 12,
-  },
-  reactionCount: {
+  teamIndicatorText: {
     fontSize: 10,
-    color: '#CCC',
-    fontWeight: '600',
+    fontWeight: '800',
+    color: '#FFF',
   },
-  reactionCountHighlighted: {
-    color: '#0066CC',
+  eventTitle: {
+    fontSize: 13,
     fontWeight: '700',
+    color: '#FFF',
   },
-  contextMenu: {
+  eventDescription: {
+    fontSize: 12,
+    color: '#C7C7CC',
+    lineHeight: 16,
+  },
+  scorelineText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#FFF',
+  },
+  jumpToLiveButton: {
     position: 'absolute',
-    top: -80,
-    backgroundColor: '#2C2C2E',
-    borderRadius: 16,
-    padding: 10,
+    right: 16,
+    bottom: 24,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#0066CC',
+    borderRadius: 18,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 12,
-    elevation: 10,
-    zIndex: 1000,
-    minWidth: 200,
+    shadowOpacity: 0.25,
+    shadowRadius: 8,
+    elevation: 6,
   },
-  contextMenuLeft: {
-    left: 0,
-  },
-  contextMenuRight: {
-    right: 0,
-  },
-  contextMenuItem: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    paddingVertical: 8,
-  },
-  contextMenuText: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#FFF',
-  },
-  contextMenuDivider: {
-    height: 1,
-    backgroundColor: 'rgba(255,255,255,0.1)',
-    marginVertical: 6,
-  },
-  contextMenuEmojis: {
-    flexDirection: 'row',
-    gap: 6,
-    paddingTop: 4,
-  },
-  contextMenuEmojiButton: {
-    width: 36,
-    height: 36,
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderRadius: 18,
-    backgroundColor: 'transparent',
-  },
-  contextMenuEmojiButtonActive: {
-    backgroundColor: 'rgba(0, 102, 204, 0.25)',
-  },
-  contextMenuEmoji: {
-    fontSize: 20,
-  },
-  inputContainer: {
-    paddingHorizontal: 12,
-    paddingTop: 8,
-    paddingBottom: Platform.OS === 'ios' ? 24 : 12,
-    backgroundColor: '#2C2C2E',
-    borderTopWidth: 1,
-    borderTopColor: '#3C3C3E',
-  },
-  replyingTo: {
-    backgroundColor: '#2C2C2E',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    marginBottom: 8,
-    borderRadius: 8,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    borderLeftWidth: 3,
-    borderLeftColor: '#0066CC',
-  },
-  replyingToContent: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    flex: 1,
-  },
-  replyingToTextContainer: {
-    flex: 1,
-  },
-  replyingToUsername: {
-    fontSize: 11,
+  jumpToLiveText: {
+    fontSize: 12,
     fontWeight: '700',
-    color: '#0066CC',
-    marginBottom: 2,
-  },
-  replyingToText: {
-    fontSize: 11,
-    color: '#999',
-  },
-  inputWrapper: {
-    flexDirection: 'row',
-    alignItems: 'flex-end',
-    backgroundColor: '#3C3C3E',
-    borderRadius: 24,
-    paddingLeft: 16,
-    paddingRight: 4,
-    paddingVertical: 4,
-  },
-  input: {
-    flex: 1,
-    fontSize: 15,
     color: '#FFF',
-    maxHeight: 100,
-    paddingVertical: 10,
-  },
-  sendButton: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: '#0066CC',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginLeft: 8,
-  },
-  sendButtonDisabled: {
-    backgroundColor: '#3C3C3E',
   },
   
   // Stats styles
@@ -1344,27 +1419,8 @@ const styles = StyleSheet.create({
   
   // Events styles
   eventsContainer: {
-    padding: 20,
-  },
-  eventCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#2C2C2E',
-    padding: 12,
-    borderRadius: 8,
-    marginBottom: 8,
+    padding: 16,
     gap: 12,
-  },
-  eventMinute: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#0066CC',
-    width: 40,
-  },
-  eventText: {
-    fontSize: 14,
-    color: '#FFF',
-    flex: 1,
   },
   
   // Lineup styles
