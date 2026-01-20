@@ -1,9 +1,9 @@
-// app/chat/[id].tsx
+﻿// app/chat/[id].tsx
 // FINAL VERSION: Real Firebase Chat + Pitch Visualization + 3 Tabs
-// ✅ Each match has isolated chat room
-// ✅ Real-time Firebase chat with reactions
-// ✅ Pitch visualization with player positions
-// ✅ Horizontal substitutes list
+// âœ… Each match has isolated chat room
+// âœ… Real-time Firebase chat with reactions
+// âœ… Pitch visualization with player positions
+// âœ… Horizontal substitutes list
 
 import { Ionicons } from '@expo/vector-icons';
 import { router, useLocalSearchParams } from 'expo-router';
@@ -14,7 +14,9 @@ import {
   FlatList,
   Image,
   KeyboardAvoidingView,
+  PanResponder,
   Platform,
+  Pressable,
   SafeAreaView,
   ScrollView,
   StyleSheet,
@@ -27,6 +29,7 @@ import { shadow } from '../../components/styleUtils';
 import { footballAPI } from '../../services/footballApi';
 import { useAuth } from '../../context/AuthContext';
 import { chatService, ChatMessage } from '../../services/chatService';
+import { EMOJI_REACTIONS } from '../../services/chatReactions';
 
 type TabType = 'chat' | 'facts' | 'lineups';
 
@@ -123,7 +126,6 @@ const TEAM_COLORS = {
   neutral: '#8E8E93',
 };
 
-const AVAILABLE_EMOJIS = ['⚽', '🔥', '👏', '😮', '💪', '❤️', '😂'];
 
 const getTeamAbbreviation = (teamName?: string) => {
   if (!teamName) return 'TBD';
@@ -225,7 +227,7 @@ const formatEventDescription = (event: PlayByPlayEvent, matchData: MatchData | n
 };
 
 const buildPlayByPlayEvents = (rawEvents: any[], matchData: MatchData): PlayByPlayEvent[] => {
-  console.log('📊 Building play-by-play from', rawEvents.length, 'raw events');
+  console.log('ðŸ“Š Building play-by-play from', rawEvents.length, 'raw events');
   
   const sorted = [...rawEvents].sort((a, b) => {
     const minuteDiff = (a.time?.elapsed || 0) - (b.time?.elapsed || 0);
@@ -285,7 +287,7 @@ const buildPlayByPlayEvents = (rawEvents: any[], matchData: MatchData): PlayByPl
       if (detail.includes('full-time') || detail.includes('fulltime')) return 'FT';
       
       // Default to SHOT for unclassified events
-      console.log('⚠️ Unclassified event:', type, detail, comments);
+      console.log('âš ï¸ Unclassified event:', type, detail, comments);
       return 'SHOT';
     })();
 
@@ -324,7 +326,7 @@ const buildPlayByPlayEvents = (rawEvents: any[], matchData: MatchData): PlayByPl
 
     playByPlayEvent.description = formatEventDescription(playByPlayEvent, matchData);
     
-    console.log(`✅ Event ${index + 1}:`, playByPlayEvent.minute + "'", normalizedType, playByPlayEvent.description);
+    console.log(`âœ… Event ${index + 1}:`, playByPlayEvent.minute + "'", normalizedType, playByPlayEvent.description);
     
     return playByPlayEvent;
   });
@@ -379,6 +381,8 @@ export default function LiveMatchChat() {
   const { id } = useLocalSearchParams();
   const { userProfile } = useAuth();
   const scrollViewRef = useRef<ScrollView>(null);
+  const lastTapRef = useRef<Record<string, number>>({});
+  const panResponderRefs = useRef<Record<string, ReturnType<typeof PanResponder.create>>>({});
   const chatRoomId = useMemo(() => {
     const fixtureId = Array.isArray(id) ? id[0] : id;
     return fixtureId ? `match:${fixtureId}` : 'match:unknown';
@@ -485,7 +489,7 @@ export default function LiveMatchChat() {
       return;
     }
 
-    console.log('🔄 Fetching live data for fixture:', fixtureId);
+    console.log('ðŸ”„ Fetching live data for fixture:', fixtureId);
     setError(null);
     
     try {
@@ -522,8 +526,8 @@ export default function LiveMatchChat() {
       setLineups(mapLineups(liveData.lineups));
       
       // LOG WHAT API RETURNS
-      console.log('📊 Raw events from API:', liveData.events.length);
-      console.log('📊 Event types:', liveData.events.map((e: any) => `${e.time?.elapsed}' ${e.type} - ${e.detail}`));
+      console.log('ðŸ“Š Raw events from API:', liveData.events.length);
+      console.log('ðŸ“Š Event types:', liveData.events.map((e: any) => `${e.time?.elapsed}' ${e.type} - ${e.detail}`));
       
       setPlayByPlayEvents(
         liveData.events.length > 0 ? buildPlayByPlayEvents(liveData.events, mappedMatch) : []
@@ -542,7 +546,7 @@ export default function LiveMatchChat() {
         }, 15000);
       }
     } catch (err) {
-      console.error('❌ Error fetching live data:', err);
+      console.error('âŒ Error fetching live data:', err);
       setError('Failed to load match data');
       setLoading(false);
     }
@@ -562,13 +566,13 @@ export default function LiveMatchChat() {
 
   // REAL FIREBASE CHAT SUBSCRIPTION
   useEffect(() => {
-    console.log('🔥 Subscribing to Firebase chat:', chatRoomId);
+    console.log('ðŸ”¥ Subscribing to Firebase chat:', chatRoomId);
     const unsubscribe = chatService.subscribeToChat(chatRoomId, (newMessages) => {
-      console.log('📨 Chat messages updated:', newMessages.length);
+      console.log('ðŸ“¨ Chat messages updated:', newMessages.length);
       setMessages(newMessages);
     });
     return () => {
-      console.log('🔥 Unsubscribing from Firebase chat');
+      console.log('ðŸ”¥ Unsubscribing from Firebase chat');
       unsubscribe();
     };
   }, [chatRoomId]);
@@ -577,22 +581,86 @@ export default function LiveMatchChat() {
     scrollViewRef.current?.scrollToEnd({ animated: true });
   }, [messages]);
 
+  const closeContextMenu = () => {
+    setShowEmojiPicker(false);
+    setSelectedMessage(null);
+  };
+
   const handleLongPress = (msg: ChatMessage) => {
     if (msg.type === 'system') return;
     setSelectedMessage(msg);
     setShowEmojiPicker(true);
   };
 
-  const addReaction = async (emoji: string) => {
-    if (!selectedMessage || !userProfile) return;
-    await chatService.toggleReaction(
-      chatRoomId,
-      selectedMessage.id,
-      emoji,
-      userProfile.uid
+  const toggleReaction = async (messageId: string, emoji: string) => {
+    if (!userProfile) return;
+    const currentUserId = userProfile.uid;
+
+    setMessages(prev =>
+      prev.map(msg => {
+        if (msg.id !== messageId || msg.type === 'system') return msg;
+        const reactions = { ...(msg.reactions || {}) };
+        const existing = reactions[emoji];
+        const reaction = existing
+          ? { count: existing.count, userIds: [...existing.userIds] }
+          : { count: 0, userIds: [] };
+        const hasReacted = reaction.userIds.includes(currentUserId);
+
+        if (hasReacted) {
+          reaction.userIds = reaction.userIds.filter(id => id !== currentUserId);
+          reaction.count = reaction.userIds.length;
+          if (reaction.count === 0) {
+            delete reactions[emoji];
+          } else {
+            reactions[emoji] = reaction;
+          }
+        } else {
+          reaction.userIds.push(currentUserId);
+          reaction.count = reaction.userIds.length;
+          reactions[emoji] = reaction;
+        }
+
+        return { ...msg, reactions };
+      })
     );
-    setShowEmojiPicker(false);
-    setSelectedMessage(null);
+
+    await chatService.toggleReaction(chatRoomId, messageId, emoji, currentUserId);
+    closeContextMenu();
+  };
+
+  const toggleHeart = async (msg: ChatMessage) => {
+    if (msg.type === 'system') return;
+    await toggleReaction(msg.id, '❤️');
+  };
+
+  const handleReply = (msg: ChatMessage) => {
+    if (msg.type === 'system') return;
+    setReplyingTo(msg);
+    closeContextMenu();
+  };
+
+  const handleSwipeReply = (msg: ChatMessage) => {
+    if (msg.type === 'system') return;
+    setReplyingTo(msg);
+  };
+
+  const getPanResponder = (msg: ChatMessage) => {
+    if (!panResponderRefs.current[msg.id]) {
+      panResponderRefs.current[msg.id] = PanResponder.create({
+        onMoveShouldSetPanResponder: (_, gesture) => {
+          if (msg.type === 'system') return false;
+          const { dx, dy } = gesture;
+          return dx > 10 && Math.abs(dx) > Math.abs(dy);
+        },
+        onPanResponderRelease: (_, gesture) => {
+          const { dx, dy } = gesture;
+          if (dx > 40 && Math.abs(dy) < 20) {
+            handleSwipeReply(msg);
+          }
+        }
+      });
+    }
+    return panResponderRefs.current[msg.id];
   };
 
   const handleSend = async () => {
@@ -645,6 +713,8 @@ export default function LiveMatchChat() {
   const renderMessage = (msg: ChatMessage) => {
     const isCurrentUser = msg.userId === userProfile?.uid;
     const isSystem = msg.type === 'system';
+    const myUid = userProfile?.uid;
+    const panResponder = getPanResponder(msg);
 
     if (isSystem) {
       return (
@@ -655,80 +725,128 @@ export default function LiveMatchChat() {
     }
 
     return (
-      <TouchableOpacity
+      <View
         key={msg.id}
         style={[
           styles.messageContainer,
           isCurrentUser && styles.currentUserMessageContainer
         ]}
-        onLongPress={() => handleLongPress(msg)}
-        activeOpacity={0.8}
+        {...panResponder.panHandlers}
       >
-        <View
-          style={[
-            styles.messageWrapper,
-            isCurrentUser && styles.currentUserMessageWrapper
-          ]}
-        >
-          {/* Username and Match Minute on same line */}
-          {!isCurrentUser && (
-            <View style={styles.messageHeader}>
-              <Text style={styles.username}>{msg.username}</Text>
-              {msg.matchMinute !== undefined && (
-                <Text style={styles.matchMinute}>{msg.matchMinute}'</Text>
-              )}
-            </View>
-          )}
-
-          {/* Current user: show match minute on right */}
-          {isCurrentUser && msg.matchMinute !== undefined && (
-            <Text style={styles.matchMinuteRight}>{msg.matchMinute}'</Text>
-          )}
-
-          {msg.replyTo && (
-            <View style={styles.replyContext}>
-              <Text style={styles.replyContextUser}>@{msg.replyTo.username}</Text>
-              <Text style={styles.replyContextText} numberOfLines={1}>
-                {msg.replyTo.text}
-              </Text>
-            </View>
-          )}
-
-          <View
-            style={[
-              styles.messageBubble,
-              isCurrentUser && styles.currentUserBubble,
-              { backgroundColor: isCurrentUser ? '#0066CC' : '#2C2C2E' }
-            ]}
+          <Pressable
+            onLongPress={() => handleLongPress(msg)}
+            delayLongPress={350}
+            onPressIn={() => {
+              const now = Date.now();
+              const last = lastTapRef.current[msg.id] || 0;
+              if (now - last < 300) {
+                toggleHeart(msg);
+                lastTapRef.current[msg.id] = 0;
+              } else {
+                lastTapRef.current[msg.id] = now;
+              }
+            }}
           >
-            <Text style={styles.messageText}>{msg.text}</Text>
-          </View>
+            <View
+              style={[
+                styles.messageWrapper,
+                isCurrentUser && styles.currentUserMessageWrapper
+              ]}
+            >
+              {/* Username and Match Minute on same line */}
+              {!isCurrentUser && (
+                <View style={styles.messageHeader}>
+                  <Text style={styles.username}>{msg.username}</Text>
+                  {msg.matchMinute !== undefined && (
+                    <Text style={styles.matchMinute}>{msg.matchMinute}'</Text>
+                  )}
+                </View>
+              )}
+
+              {/* Current user: show match minute on right */}
+              {isCurrentUser && msg.matchMinute !== undefined && (
+                <Text style={styles.matchMinuteRight}>{msg.matchMinute}'</Text>
+              )}
+
+              {msg.replyTo && (
+                <View style={styles.replyContext}>
+                  <Text style={styles.replyContextUser}>@{msg.replyTo.username}</Text>
+                  <Text style={styles.replyContextText} numberOfLines={1}>
+                    {msg.replyTo.text}
+                  </Text>
+                </View>
+              )}
+
+              <View
+                style={[
+                  styles.messageBubble,
+                  isCurrentUser && styles.currentUserBubble,
+                  { backgroundColor: isCurrentUser ? '#0066CC' : '#2C2C2E' }
+                ]}
+              >
+                <Text style={styles.messageText}>{msg.text}</Text>
+              </View>
+            </View>
+          </Pressable>
 
           {Object.keys(msg.reactions || {}).length > 0 && (
             <View style={styles.reactions}>
-              {Object.entries(msg.reactions).map(([emoji, reaction]) => (
-                <View key={emoji} style={styles.reaction}>
-                  <Text style={styles.reactionEmoji}>{emoji}</Text>
-                  <Text style={styles.reactionCount}>{reaction.count}</Text>
-                </View>
-              ))}
+              {Object.entries(msg.reactions).map(([emoji, reaction]) => {
+                const reactionUserIds = reaction.userIds || [];
+                const hasReacted = !!myUid && reactionUserIds.includes(myUid);
+                return (
+                  <TouchableOpacity
+                    key={emoji}
+                    style={[styles.reaction, hasReacted && styles.reactionHighlighted]}
+                    onPress={() => toggleReaction(msg.id, emoji)}
+                  >
+                    <Text style={styles.reactionEmoji}>{emoji}</Text>
+                    <Text style={[styles.reactionCount, hasReacted && styles.reactionCountHighlighted]}>
+                      {reaction.count}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
             </View>
           )}
 
-          <View
-            style={[
-              styles.messageFooter,
-              isCurrentUser && styles.currentUserFooter
-            ]}
-          >
-            {!isCurrentUser && (
-              <TouchableOpacity onPress={() => setReplyingTo(msg)}>
-                <Text style={styles.replyButton}>Reply</Text>
+          {showEmojiPicker && selectedMessage?.id === msg.id && (
+            <View
+              style={[
+                styles.contextMenu,
+                isCurrentUser ? styles.contextMenuRight : styles.contextMenuLeft
+              ]}
+            >
+              <TouchableOpacity
+                style={styles.contextMenuItem}
+                onPress={() => handleReply(msg)}
+              >
+                <Ionicons name="arrow-undo" size={16} color="#FFF" />
+                <Text style={styles.contextMenuText}>Reply</Text>
               </TouchableOpacity>
-            )}
-          </View>
+
+              <View style={styles.contextMenuDivider} />
+
+              <View style={styles.contextMenuEmojis}>
+                {EMOJI_REACTIONS.map((emoji) => {
+                  const hasReacted = !!myUid && msg.reactions?.[emoji]?.userIds?.includes(myUid);
+                  return (
+                    <TouchableOpacity
+                      key={emoji}
+                      style={[
+                        styles.contextMenuEmojiButton,
+                        hasReacted && styles.contextMenuEmojiButtonActive
+                      ]}
+                      onPress={() => toggleReaction(msg.id, emoji)}
+                    >
+                      <Text style={styles.contextMenuEmoji}>{emoji}</Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            </View>
+          )}
         </View>
-      </TouchableOpacity>
     );
   };
 
@@ -928,6 +1046,7 @@ export default function LiveMatchChat() {
             style={styles.chatContainer}
             contentContainerStyle={styles.chatContent}
             showsVerticalScrollIndicator={false}
+            onScrollBeginDrag={closeContextMenu}
           >
             {messages.length === 0 ? (
               <View style={styles.emptyChat}>
@@ -977,28 +1096,6 @@ export default function LiveMatchChat() {
             </TouchableOpacity>
           </View>
 
-          {showEmojiPicker && selectedMessage && (
-            <TouchableOpacity 
-              style={styles.emojiPickerOverlay}
-              activeOpacity={1}
-              onPress={() => {
-                setShowEmojiPicker(false);
-                setSelectedMessage(null);
-              }}
-            >
-              <View style={styles.emojiPicker}>
-                {AVAILABLE_EMOJIS.map((emoji) => (
-                  <TouchableOpacity
-                    key={emoji}
-                    style={styles.emojiButton}
-                    onPress={() => addReaction(emoji)}
-                  >
-                    <Text style={styles.emojiText}>{emoji}</Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-            </TouchableOpacity>
-          )}
         </KeyboardAvoidingView>
       )}
 
@@ -1221,6 +1318,7 @@ const styles = StyleSheet.create({
   messageContainer: {
     marginBottom: 16,
     alignItems: 'flex-start',
+    position: 'relative',
   },
   currentUserMessageContainer: {
     alignItems: 'flex-end',
@@ -1294,6 +1392,12 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     paddingHorizontal: 8,
     paddingVertical: 4,
+    borderWidth: 1,
+    borderColor: 'transparent',
+  },
+  reactionHighlighted: {
+    backgroundColor: 'rgba(0, 102, 204, 0.2)',
+    borderColor: '#0066CC',
   },
   reactionEmoji: {
     fontSize: 14,
@@ -1304,19 +1408,60 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: '#FFF',
   },
-  messageFooter: {
+  reactionCountHighlighted: {
+    color: '#0066CC',
+    fontWeight: '700',
+  },
+  contextMenu: {
+    position: 'absolute',
+    top: -78,
+    backgroundColor: '#2C2C2E',
+    borderRadius: 16,
+    padding: 10,
+    ...shadow({ y: 4, blur: 12, opacity: 0.3, elevation: 10 }),
+    zIndex: 1000,
+    minWidth: 200,
+  },
+  contextMenuLeft: {
+    left: 0,
+  },
+  contextMenuRight: {
+    right: 0,
+  },
+  contextMenuItem: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginTop: 4,
-    gap: 12,
+    gap: 8,
+    paddingVertical: 8,
   },
-  currentUserFooter: {
-    justifyContent: 'flex-end',
-  },
-  replyButton: {
-    fontSize: 12,
+  contextMenuText: {
+    fontSize: 14,
     fontWeight: '600',
-    color: '#0066CC',
+    color: '#FFF',
+  },
+  contextMenuDivider: {
+    height: 1,
+    backgroundColor: 'rgba(255,255,255,0.1)',
+    marginVertical: 6,
+  },
+  contextMenuEmojis: {
+    flexDirection: 'row',
+    gap: 6,
+    paddingTop: 4,
+  },
+  contextMenuEmojiButton: {
+    width: 36,
+    height: 36,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderRadius: 18,
+    backgroundColor: 'transparent',
+  },
+  contextMenuEmojiButtonActive: {
+    backgroundColor: 'rgba(0, 102, 204, 0.25)',
+  },
+  contextMenuEmoji: {
+    fontSize: 20,
   },
   systemMessage: {
     alignSelf: 'center',
@@ -1381,25 +1526,6 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     alignItems: 'center',
     justifyContent: 'center',
-  },
-  emojiPickerOverlay: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: 'rgba(0,0,0,0.5)',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  emojiPicker: {
-    flexDirection: 'row',
-    backgroundColor: '#2C2C2E',
-    borderRadius: 20,
-    padding: 12,
-    gap: 8,
-  },
-  emojiButton: {
-    padding: 8,
-  },
-  emojiText: {
-    fontSize: 24,
   },
   
   // Stats styles

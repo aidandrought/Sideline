@@ -42,7 +42,17 @@ export default function ExploreScreen() {
 
   const cached = useMemo(() => communityService.getCachedAllCommunities(), []);
   const cachedAll = cached?.data ?? [];
-  const cachedExploreData = useMemo(() => deriveExploreData(cachedAll), [cachedAll, deriveExploreData]);
+  const [allCommunities, setAllCommunities] = useState<Community[]>(cachedAll);
+  const exploreData = useMemo(() => {
+    if (__DEV__) {
+      console.time('explore.derive');
+    }
+    const data = deriveExploreData(allCommunities);
+    if (__DEV__) {
+      console.timeEnd('explore.derive');
+    }
+    return data;
+  }, [allCommunities, deriveExploreData]);
 
   const [searchQuery, setSearchQuery] = useState('');
   const [searching, setSearching] = useState(false);
@@ -58,9 +68,16 @@ export default function ExploreScreen() {
   const [newsRateLimited, setNewsRateLimited] = useState(false);
   const searchAbortRef = useRef<AbortController | null>(null);
   
-  const [leagues, setLeagues] = useState<Community[]>(cachedExploreData.leagueList);
-  const [popularTeams, setPopularTeams] = useState<Community[]>(cachedExploreData.popularTeamsList);
   const [loading, setLoading] = useState(cachedAll.length === 0);
+  const leagues = exploreData.leagueList;
+  const popularTeams = exploreData.popularTeamsList;
+  const allCommunitiesRef = useRef<Community[]>(cachedAll);
+  const matchesCacheRef = useRef<Match[]>([]);
+  const matchesCacheAtRef = useRef(0);
+  const matchesLoadRef = useRef<Promise<Match[]> | null>(null);
+  const latestSearchRef = useRef('');
+  const mountTimeRef = useRef(Date.now());
+  const firstRenderLoggedRef = useRef(false);
 
   useEffect(() => {
     loadExplorePage();
@@ -109,25 +126,31 @@ export default function ExploreScreen() {
 
   const loadExplorePage = async () => {
     try {
-      const cachedSnapshot = communityService.getCachedAllCommunities();
+      if (__DEV__) {
+        console.time('explore.load');
+      }
+      const cachedSnapshot = await communityService.getCachedAllCommunitiesAsync();
       if (cachedSnapshot?.data.length) {
-        const { leagueList, popularTeamsList } = deriveExploreData(cachedSnapshot.data);
-        setLeagues(leagueList);
-        setPopularTeams(popularTeamsList);
+        setAllCommunities(cachedSnapshot.data);
+        allCommunitiesRef.current = cachedSnapshot.data;
         setLoading(false);
       } else {
         setLoading(true);
       }
 
       const fresh = await communityService.refreshCommunitiesIfStale();
-      const allCommunities = fresh ? [...fresh.teams, ...fresh.leagues] : await communityService.getAllCommunities();
-      const { leagueList, popularTeamsList } = deriveExploreData(allCommunities);
-      setLeagues(leagueList);
-      setPopularTeams(popularTeamsList);
+      if (fresh) {
+        const next = [...fresh.teams, ...fresh.leagues];
+        setAllCommunities(next);
+        allCommunitiesRef.current = next;
+      }
     } catch (error) {
       console.error('Error loading explore page:', error);
     } finally {
       setLoading(false);
+      if (__DEV__) {
+        console.timeEnd('explore.load');
+      }
     }
   };
 
@@ -148,6 +171,9 @@ export default function ExploreScreen() {
     }
 
     try {
+      if (__DEV__) {
+        console.time(`explore.news.page.${pageToLoad}`);
+      }
       const response = await newsAPI.searchNewsQuery({ q: query, page: pageToLoad, pageSize: 20, signal });
       if (response.isStale) {
         setNewsRateLimited(true);
@@ -173,11 +199,47 @@ export default function ExploreScreen() {
       console.error('Error loading news results:', error);
       setNewsHasMore(false);
     } finally {
+      if (__DEV__) {
+        console.timeEnd(`explore.news.page.${pageToLoad}`);
+      }
       if (append) {
         setNewsLoadingMore(false);
       }
     }
   }, [dedupeNewsByUrl, newsHasMore, newsLoadingMore]);
+
+  const loadMatchesCache = useCallback(async () => {
+    const age = Date.now() - matchesCacheAtRef.current;
+    if (matchesCacheRef.current.length > 0 && age < 2 * 60 * 1000) {
+      return matchesCacheRef.current;
+    }
+    if (matchesLoadRef.current) {
+      return matchesLoadRef.current;
+    }
+
+    matchesLoadRef.current = (async () => {
+      if (__DEV__) {
+        console.time('explore.matchesFetch');
+      }
+      const [live, upcoming] = await Promise.all([
+        footballAPI.getLiveMatches(),
+        footballAPI.getUpcomingMatches()
+      ]);
+      const combined = [...live, ...upcoming];
+      matchesCacheRef.current = combined;
+      matchesCacheAtRef.current = Date.now();
+      if (__DEV__) {
+        console.timeEnd('explore.matchesFetch');
+      }
+      return combined;
+    })();
+
+    try {
+      return await matchesLoadRef.current;
+    } finally {
+      matchesLoadRef.current = null;
+    }
+  }, []);
 
   async function performSearch(query: string, signal?: AbortSignal) {
     if (query.trim().length < 2) {
@@ -187,26 +249,40 @@ export default function ExploreScreen() {
       return;
     }
     try {
-      // Search teams and leagues
-      const communities = await communityService.searchCommunities(query);
-      const teams = communities.filter(c => c.type === 'team');
-      const leagueResults = communities.filter(c => c.type === 'league');
-      
-      // Search matches
-      const liveMatches = await footballAPI.getLiveMatches();
-      const upcomingMatches = await footballAPI.getUpcomingMatches();
-      const allMatches = [...liveMatches, ...upcomingMatches];
-      const matchResults = allMatches.filter(m =>
-        m.home.toLowerCase().includes(query.toLowerCase()) ||
-        m.away.toLowerCase().includes(query.toLowerCase()) ||
-        m.league.toLowerCase().includes(query.toLowerCase())
-      ).slice(0, 5);
+      latestSearchRef.current = query;
+      const lower = query.toLowerCase();
+      const communities = allCommunitiesRef.current;
+      const teams = communities.filter(c =>
+        c.type === 'team' &&
+        (c.name.toLowerCase().includes(lower) ||
+          (c.league && c.league.toLowerCase().includes(lower)))
+      );
+      const leagueResults = communities.filter(c =>
+        c.type === 'league' &&
+        (c.name.toLowerCase().includes(lower) ||
+          (c.country && c.country.toLowerCase().includes(lower)))
+      );
       
       setSearchResults({
         teams,
         leagues: leagueResults,
-        matches: matchResults,
+        matches: [],
         news: []
+      });
+
+      loadMatchesCache().then((allMatches) => {
+        if (latestSearchRef.current !== query) return;
+        const matchResults = allMatches.filter(m =>
+          m.home.toLowerCase().includes(lower) ||
+          m.away.toLowerCase().includes(lower) ||
+          m.league.toLowerCase().includes(lower)
+        ).slice(0, 5);
+        setSearchResults(prev => ({
+          ...prev,
+          matches: matchResults
+        }));
+      }).catch(error => {
+        console.error('Error loading matches cache:', error);
       });
 
       await loadNewsPage(query, 1, false, signal);
@@ -312,6 +388,16 @@ export default function ExploreScreen() {
   ), [router]);
 
   const showSkeleton = loading && leagues.length === 0 && popularTeams.length === 0;
+  
+  useEffect(() => {
+    if (!firstRenderLoggedRef.current && !loading) {
+      firstRenderLoggedRef.current = true;
+      if (__DEV__) {
+        const delta = Date.now() - mountTimeRef.current;
+        console.log(`Explore first render: ${delta}ms`);
+      }
+    }
+  }, [loading]);
 
   if (showSkeleton) {
     return (

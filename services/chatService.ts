@@ -1,8 +1,8 @@
-// services/chatService.ts
+﻿// services/chatService.ts
 // Real chat service with match minute tracking
-// ✅ Real live games = EMPTY chat (users communicate)
-// ✅ Demo game only = Mock messages (for testing)
-// ✅ Match minute shown next to username (67')
+// Real live games = EMPTY chat (users communicate)
+// Demo game only = Mock messages (for testing)
+// Match minute shown next to username (67')
 
 export interface ChatMessage {
   id: string;
@@ -14,7 +14,7 @@ export interface ChatMessage {
   reactions: {
     [emoji: string]: {
       count: number;
-      users: string[];
+      userIds: string[];
     };
   };
   replyTo?: {
@@ -36,7 +36,7 @@ export class ChatService {
     if (!this.chatRooms[matchId]) {
       // ONLY add mock messages for demo match
       if (matchId === DEMO_MATCH_ID) {
-        console.log('📝 Loading DEMO chat with mock messages');
+        console.log('Loading DEMO chat with mock messages');
         this.chatRooms[matchId] = [
           {
             id: '1',
@@ -46,8 +46,8 @@ export class ChatService {
             timestamp: Date.now() - 300000,
             matchMinute: 23, // Message sent at 23'
             reactions: {
-              '❤️': { count: 5, users: ['user1', 'user2'] },
-              '👍': { count: 3, users: ['user3'] }
+              '❤️': { count: 5, userIds: ['user1', 'user2'] },
+              '👏': { count: 3, userIds: ['user3'] }
             },
             type: 'user'
           },
@@ -68,13 +68,13 @@ export class ChatService {
             text: 'What a goal! Best team in the world!',
             timestamp: Date.now() - 120000,
             matchMinute: 24,
-            reactions: { '❤️': { count: 2, users: ['user2'] } },
+            reactions: { '❤️': { count: 2, userIds: ['user2'] } },
             type: 'user'
           }
         ];
       } else {
         // Real live game - START WITH EMPTY CHAT
-        console.log('🔥 Starting REAL chat for match:', matchId);
+        console.log('Starting REAL chat for match:', matchId);
         this.chatRooms[matchId] = [];
       }
     }
@@ -84,7 +84,7 @@ export class ChatService {
 
     // Return unsubscribe function
     return () => {
-      console.log('👋 Unsubscribed from chat:', matchId);
+      console.log('Unsubscribed from chat:', matchId);
     };
   }
 
@@ -113,7 +113,7 @@ export class ChatService {
     }
 
     this.chatRooms[matchId].push(newMessage);
-    console.log(`💬 Message sent at ${matchMinute}'`, newMessage);
+    console.log(`Message sent at ${matchMinute}'`, newMessage);
     
     return newMessage;
   }
@@ -125,16 +125,16 @@ export class ChatService {
     if (!message) return;
 
     if (!message.reactions[emoji]) {
-      message.reactions[emoji] = { count: 0, users: [] };
+      message.reactions[emoji] = { count: 0, userIds: [] };
     }
 
-    const users = message.reactions[emoji].users;
-    const hasReacted = users.includes(userId);
+    const userIds = message.reactions[emoji].userIds;
+    const hasReacted = userIds.includes(userId);
 
     if (hasReacted) {
       // Remove reaction
-      message.reactions[emoji].users = users.filter(u => u !== userId);
-      message.reactions[emoji].count = message.reactions[emoji].users.length;
+      message.reactions[emoji].userIds = userIds.filter(u => u !== userId);
+      message.reactions[emoji].count = message.reactions[emoji].userIds.length;
       
       // Delete emoji key if count is 0
       if (message.reactions[emoji].count === 0) {
@@ -142,8 +142,8 @@ export class ChatService {
       }
     } else {
       // Add reaction
-      message.reactions[emoji].users.push(userId);
-      message.reactions[emoji].count = message.reactions[emoji].users.length;
+      message.reactions[emoji].userIds.push(userId);
+      message.reactions[emoji].count = message.reactions[emoji].userIds.length;
     }
   }
 

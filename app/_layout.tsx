@@ -18,6 +18,13 @@ export default function RootLayout() {
         
         {/* Match Chat Screen - Each match has unique chat */}
         <Stack.Screen 
+          name="chat/demo" 
+          options={{
+            presentation: 'card',
+            animation: 'slide_from_right'
+          }}
+        />
+        <Stack.Screen 
           name="chat/[id]" 
           options={{
             presentation: 'card',

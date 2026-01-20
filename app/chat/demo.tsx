@@ -21,6 +21,7 @@ import {
 } from 'react-native';
 import { shadow } from '../../components/styleUtils';
 import { useAuth } from '../../context/AuthContext';
+import { EMOJI_REACTIONS } from '../../services/chatReactions';
 
 type TabType = 'chat' | 'stats' | 'facts' | 'lineups';
 
@@ -52,14 +53,14 @@ interface Lineup {
 }
 
 const DEMO_EVENTS: Event[] = [
-  { minute: 1, type: 'period', team: 'home', player: '', text: "Kickoff" },
-  { minute: 12, type: 'yellow', team: 'away', player: 'Declan Rice', text: "ðŸŸ¨ Rice booked for a late challenge" },
-  { minute: 23, type: 'goal', team: 'home', player: 'Salah', text: "âš½ GOAL! Salah finishes low to the corner (1-0)" },
-  { minute: 45, type: 'period', team: 'home', player: '', text: "Half-time" },
-  { minute: 53, type: 'goal', team: 'away', player: 'Saka', text: "âš½ GOAL! Saka equalizes with a curler (1-1)" },
-  { minute: 58, type: 'goal', team: 'home', player: 'Salah', text: "âš½ GOAL! Salah again! Liverpool back in front (2-1)" },
-  { minute: 61, type: 'substitution', team: 'home', player: 'NÃºÃ±ez', text: "ðŸ” Sub: NÃºÃ±ez â†” Gakpo" },
-  { minute: 64, type: 'yellow', team: 'away', player: 'Gabriel', text: "ðŸŸ¨ Gabriel booked" },
+  { minute: 1, type: 'period', team: 'home', player: '', text: 'Kickoff' },
+  { minute: 12, type: 'yellow', team: 'away', player: 'Declan Rice', text: '🟨 Rice booked for a late challenge' },
+  { minute: 23, type: 'goal', team: 'home', player: 'Salah', text: '⚽ GOAL! Salah finishes low to the corner (1-0)' },
+  { minute: 45, type: 'period', team: 'home', player: '', text: 'Half-time' },
+  { minute: 53, type: 'goal', team: 'away', player: 'Saka', text: '⚽ GOAL! Saka equalizes with a curler (1-1)' },
+  { minute: 58, type: 'goal', team: 'home', player: 'Salah', text: '⚽ GOAL! Salah again! Liverpool back in front (2-1)' },
+  { minute: 61, type: 'substitution', team: 'home', player: 'Nunez', text: '🔁 Sub: Nunez for Gakpo' },
+  { minute: 64, type: 'yellow', team: 'away', player: 'Gabriel', text: '🟨 Gabriel booked' },
 ];
 
 const DEMO_LINEUPS: { home: Lineup; away: Lineup } = {
@@ -112,13 +113,13 @@ const DEMO_MATCH = {
 const DEMO_MESSAGES: Message[] = [
   { 
     id: '1', 
-    text: 'What a goal by Salah! ðŸ”¥', 
+    text: 'What a goal by Salah! 🔥', 
     username: 'LiverpoolFan', 
     userId: 'user1', 
     matchMinute: 58, 
     reactions: { 
-      'ðŸ”¥': { count: 5, userIds: ['user2', 'user3', 'user4', 'user5', 'user6'] },
-      'â¤ï¸': { count: 3, userIds: ['user7', 'user8', 'user9'] }
+      '🔥': { count: 5, userIds: ['user2', 'user3', 'user4', 'user5', 'user6'] },
+      '❤️': { count: 3, userIds: ['user7', 'user8', 'user9'] }
     }
   },
   // ... other demo messages
@@ -153,8 +154,6 @@ export default function DemoMatch() {
   const lastTapRef = useRef<{ [key: string]: number }>({});
   const replyAnimValue = useRef(new Animated.Value(0)).current;
 
-  const EMOJI_REACTIONS = ['â¤ï¸', 'ðŸ”¥', 'ðŸ˜‚', 'ðŸ˜¢', 'ðŸ‘Ž', 'ðŸ‘', 'ðŸŽ‰'];
-
   useEffect(() => {
     Animated.timing(replyAnimValue, {
       toValue: replyTo ? 1 : 0,
@@ -187,21 +186,21 @@ export default function DemoMatch() {
     setMessages(prev => prev.map(msg => {
       if (msg.id === messageId) {
         const reactions = { ...msg.reactions };
-        const heartReaction = reactions['â¤ï¸'] || { count: 0, userIds: [] };
+        const heartReaction = reactions['❤️'] || { count: 0, userIds: [] };
         
         if (heartReaction.userIds.includes(currentUserId)) {
           heartReaction.count--;
           heartReaction.userIds = heartReaction.userIds.filter(id => id !== currentUserId);
           
           if (heartReaction.count === 0) {
-            delete reactions['â¤ï¸'];
+            delete reactions['❤️'];
           } else {
-            reactions['â¤ï¸'] = heartReaction;
+            reactions['❤️'] = heartReaction;
           }
         } else {
           heartReaction.count++;
           heartReaction.userIds.push(currentUserId);
-          reactions['â¤ï¸'] = heartReaction;
+          reactions['❤️'] = heartReaction;
         }
         
         return { ...msg, reactions };

@@ -3,6 +3,7 @@
 // Communities generated dynamically from live + upcoming matches
 // Users can search, follow, and unfollow communities
 
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { doc, getDoc, onSnapshot, setDoc, updateDoc } from 'firebase/firestore';
 import { db } from '../firebaseConfig';
 import { footballAPI } from './footballApi';
@@ -26,6 +27,7 @@ export interface UserCommunities {
 }
 
 class CommunityService {
+  private readonly STORAGE_KEY = 'communityCache:v1';
   // Cache for generated communities (to avoid repeated API calls)
   private communitiesCache: {
     teams: Community[];
@@ -35,13 +37,15 @@ class CommunityService {
 
   private inFlight: Promise<{ teams: Community[]; leagues: Community[] }> | null = null;
 
-  private readonly STALE_TIME = 2 * 60 * 1000; // 2 minutes
-  private readonly CACHE_DURATION = 15 * 60 * 1000; // 15 minutes
+  private readonly STALE_TIME = 10 * 60 * 1000; // 10 minutes
+  private readonly CACHE_DURATION = 2 * 60 * 60 * 1000; // 2 hours
+  private cacheHydrated = false;
 
   /**
    * Generate communities dynamically from live + upcoming matches
    */
   async generateCommunitiesFromMatches(): Promise<{ teams: Community[]; leagues: Community[] }> {
+    await this.hydrateCacheFromStorage();
     const cacheSnapshot = this.getCacheSnapshot();
     if (cacheSnapshot) {
       if (cacheSnapshot.isStale) {
@@ -253,6 +257,7 @@ class CommunityService {
   clearCache(): void {
     this.communitiesCache = null;
     this.inFlight = null;
+    void AsyncStorage.removeItem(this.STORAGE_KEY);
     console.log('Communities cache cleared');
   }
 
@@ -266,12 +271,18 @@ class CommunityService {
     };
   }
 
+  async getCachedAllCommunitiesAsync(): Promise<{ data: Community[]; isStale: boolean; updatedAt: number } | null> {
+    await this.hydrateCacheFromStorage();
+    return this.getCachedAllCommunities();
+  }
+
   async refreshCommunities(): Promise<{ teams: Community[]; leagues: Community[] }> {
     this.communitiesCache = null;
     return await this.fetchCommunities();
   }
 
   async refreshCommunitiesIfStale(): Promise<{ teams: Community[]; leagues: Community[] } | null> {
+    await this.hydrateCacheFromStorage();
     const cacheSnapshot = this.getCacheSnapshot();
     if (!cacheSnapshot || cacheSnapshot.isStale) {
       return await this.fetchCommunities();
@@ -305,6 +316,9 @@ class CommunityService {
     if (this.inFlight) return this.inFlight;
 
     this.inFlight = (async () => {
+      if (__DEV__) {
+        console.time('communities.fetch');
+      }
       console.log('Generating communities from matches...');
 
       try {
@@ -333,6 +347,7 @@ class CommunityService {
           leagues: leagueCommunities,
           timestamp: Date.now()
         };
+        await this.persistCache();
 
         console.log(`Generated ${teamCommunities.length} team communities and ${leagueCommunities.length} league communities`);
 
@@ -343,6 +358,10 @@ class CommunityService {
       } catch (error) {
         console.error('Error generating communities:', error);
         return { teams: [], leagues: [] };
+      } finally {
+        if (__DEV__) {
+          console.timeEnd('communities.fetch');
+        }
       }
     })();
 
@@ -350,6 +369,44 @@ class CommunityService {
       return await this.inFlight;
     } finally {
       this.inFlight = null;
+    }
+  }
+
+  private async hydrateCacheFromStorage(): Promise<void> {
+    if (this.cacheHydrated || this.communitiesCache) {
+      this.cacheHydrated = true;
+      return;
+    }
+    try {
+      const raw = await AsyncStorage.getItem(this.STORAGE_KEY);
+      if (!raw) {
+        this.cacheHydrated = true;
+        return;
+      }
+      const parsed = JSON.parse(raw) as { teams: Community[]; leagues: Community[]; timestamp: number };
+      if (!parsed?.teams || !parsed?.leagues || !parsed?.timestamp) {
+        this.cacheHydrated = true;
+        return;
+      }
+      const age = Date.now() - parsed.timestamp;
+      if (age > this.CACHE_DURATION) {
+        this.cacheHydrated = true;
+        return;
+      }
+      this.communitiesCache = parsed;
+      this.cacheHydrated = true;
+    } catch (error) {
+      console.error('Error hydrating communities cache:', error);
+      this.cacheHydrated = true;
+    }
+  }
+
+  private async persistCache(): Promise<void> {
+    if (!this.communitiesCache) return;
+    try {
+      await AsyncStorage.setItem(this.STORAGE_KEY, JSON.stringify(this.communitiesCache));
+    } catch (error) {
+      console.error('Error persisting communities cache:', error);
     }
   }
 }

@@ -110,6 +110,8 @@ class FootballAPI {
   private apiKey = '7ee562287b3c02ee8426736fd81d032a';
   private readonly currentSeasonCache = new Map<number, { season: number; expiresAt: number }>();
   private readonly currentSeasonTtlMs = 12 * 60 * 60 * 1000;
+  private readonly leagueDetailsCache = new Map<number, { data: LeagueCommunity; expiresAt: number }>();
+  private readonly leagueDetailsTtlMs = 6 * 60 * 60 * 1000;
 
   // EXACT league names from API (must match exactly)
   private allowedLeagueIds = [
@@ -183,6 +185,32 @@ class FootballAPI {
       console.log('API fetch error:', error);
     }
     return null;
+  }
+
+  private async getLeagueDetails(leagueId: number): Promise<LeagueCommunity | null> {
+    const cached = this.leagueDetailsCache.get(leagueId);
+    if (cached && cached.expiresAt > Date.now()) {
+      return cached.data;
+    }
+    try {
+      const data = await this.fetch(`/leagues?id=${leagueId}`);
+      const league = data?.response?.[0]?.league;
+      if (!league) return null;
+      const mapped: LeagueCommunity = {
+        id: league.id,
+        name: league.name,
+        logo: league.logo,
+        country: league.country
+      };
+      this.leagueDetailsCache.set(leagueId, {
+        data: mapped,
+        expiresAt: Date.now() + this.leagueDetailsTtlMs
+      });
+      return mapped;
+    } catch (error) {
+      console.error('Error fetching league details:', error);
+      return null;
+    }
   }
 
   async getLiveMatches(): Promise<Match[]> {
@@ -311,58 +339,73 @@ class FootballAPI {
     leagues: LeagueCommunity[];
   }> {
     try {
+      if (__DEV__) {
+        console.time('communities.matchesFetch');
+      }
       const [liveMatches, upcomingMatches] = await Promise.all([
         this.getLiveMatches(),
         this.getUpcomingMatches()
       ]);
+      if (__DEV__) {
+        console.timeEnd('communities.matchesFetch');
+      }
 
       const allMatches = [...liveMatches, ...upcomingMatches];
-      
-      // Extract unique teams and leagues
+
+      if (__DEV__) {
+        console.time('communities.extract');
+      }
       const teamsMap = new Map<number, TeamCommunity>();
       const leaguesMap = new Map<number, LeagueCommunity>();
 
-      // Limit to avoid too many API calls - get a sample
-      const fixtureIds = allMatches.map(m => m.id).slice(0, 40);
-      
-      for (const fixtureId of fixtureIds) {
-        const data = await this.fetch(`/fixtures?id=${fixtureId}`);
-        if (data?.response?.[0]) {
-          const fixture = data.response[0];
-          
-          // Add home team
-          if (fixture.teams.home) {
-            teamsMap.set(fixture.teams.home.id, {
-              id: fixture.teams.home.id,
-              name: fixture.teams.home.name,
-              logo: fixture.teams.home.logo,
-              leagueId: fixture.league.id,
-              leagueName: fixture.league.name
-            });
-          }
-          
-          // Add away team
-          if (fixture.teams.away) {
-            teamsMap.set(fixture.teams.away.id, {
-              id: fixture.teams.away.id,
-              name: fixture.teams.away.name,
-              logo: fixture.teams.away.logo,
-              leagueId: fixture.league.id,
-              leagueName: fixture.league.name
-            });
-          }
-          
-          // Add league
-          if (fixture.league) {
-            leaguesMap.set(fixture.league.id, {
-              id: fixture.league.id,
-              name: fixture.league.name,
-              logo: fixture.league.logo,
-              country: fixture.league.country
-            });
-          }
+      for (const match of allMatches) {
+        if (match.homeId && match.homeLogo) {
+          teamsMap.set(match.homeId, {
+            id: match.homeId,
+            name: match.home,
+            logo: match.homeLogo,
+            leagueId: match.leagueId || 0,
+            leagueName: match.league
+          });
+        }
+        if (match.awayId && match.awayLogo) {
+          teamsMap.set(match.awayId, {
+            id: match.awayId,
+            name: match.away,
+            logo: match.awayLogo,
+            leagueId: match.leagueId || 0,
+            leagueName: match.league
+          });
+        }
+        if (match.leagueId) {
+          leaguesMap.set(match.leagueId, {
+            id: match.leagueId,
+            name: match.league,
+            logo: '',
+            country: ''
+          });
         }
       }
+
+      if (__DEV__) {
+        console.timeEnd('communities.extract');
+      }
+
+      const leagueIds = Array.from(leaguesMap.keys());
+      if (__DEV__) {
+        console.time('communities.leaguesFetch');
+      }
+      const leagueDetails = await Promise.all(
+        leagueIds.map(id => this.getLeagueDetails(id))
+      );
+      if (__DEV__) {
+        console.timeEnd('communities.leaguesFetch');
+      }
+      leagueDetails.forEach(detail => {
+        if (detail) {
+          leaguesMap.set(detail.id, detail);
+        }
+      });
 
       console.log(`Generated ${teamsMap.size} team communities and ${leaguesMap.size} league communities`);
 
