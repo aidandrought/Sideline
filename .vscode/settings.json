@@ -1,7 +1,31 @@
 {
-  "editor.codeActionsOnSave": {
-    "source.fixAll": "explicit",
-    "source.organizeImports": "explicit",
-    "source.sortMembers": "explicit"
+  "chat.agent.maxRequests": 200,
+
+  "chat.tools.global.autoApprove": true,
+  "chat.tools.files.autoApprove": true,
+  "chat.tools.terminal.autoApproveWorkspaceNpmScripts": true,
+
+  "chat.tools.terminal.autoApprove": {
+    "/^cmd\\b/i": true,
+    "/^wsl\\b/i": true,
+    "/^wsl\\.exe\\b/i": true,
+    "/^bash\\b/i": true,
+
+    "/^npm\\b/i": true,
+    "/^npx\\b/i": true,
+    "/^pnpm\\b/i": true,
+    "/^yarn\\b/i": true,
+    "/^expo\\b/i": true,
+    "/^eas\\b/i": true,
+    "/^git\\b/i": true,
+    "/^node\\b/i": true,
+    "/^powershell\\b/i": true,
+
+    "rm": false,
+    "del": false,
+    "rmdir": false,
+    "sudo": false,
+    "curl": false,
+    "wget": false
   }
 }

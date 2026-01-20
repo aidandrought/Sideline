@@ -1,4 +1,4 @@
-// app/chat/demo.tsx
+﻿// app/chat/demo.tsx
 // DEMO MATCH ONLY - Liverpool vs Arsenal
 // This is ONLY for testing/demo purposes
 // Real matches use chat/[id].tsx
@@ -19,6 +19,7 @@ import {
     TouchableOpacity,
     View
 } from 'react-native';
+import { shadow } from '../../components/styleUtils';
 import { useAuth } from '../../context/AuthContext';
 
 type TabType = 'chat' | 'stats' | 'facts' | 'lineups';
@@ -52,13 +53,13 @@ interface Lineup {
 
 const DEMO_EVENTS: Event[] = [
   { minute: 1, type: 'period', team: 'home', player: '', text: "Kickoff" },
-  { minute: 12, type: 'yellow', team: 'away', player: 'Declan Rice', text: "🟨 Rice booked for a late challenge" },
-  { minute: 23, type: 'goal', team: 'home', player: 'Salah', text: "⚽ GOAL! Salah finishes low to the corner (1-0)" },
+  { minute: 12, type: 'yellow', team: 'away', player: 'Declan Rice', text: "ðŸŸ¨ Rice booked for a late challenge" },
+  { minute: 23, type: 'goal', team: 'home', player: 'Salah', text: "âš½ GOAL! Salah finishes low to the corner (1-0)" },
   { minute: 45, type: 'period', team: 'home', player: '', text: "Half-time" },
-  { minute: 53, type: 'goal', team: 'away', player: 'Saka', text: "⚽ GOAL! Saka equalizes with a curler (1-1)" },
-  { minute: 58, type: 'goal', team: 'home', player: 'Salah', text: "⚽ GOAL! Salah again! Liverpool back in front (2-1)" },
-  { minute: 61, type: 'substitution', team: 'home', player: 'Núñez', text: "🔁 Sub: Núñez ↔ Gakpo" },
-  { minute: 64, type: 'yellow', team: 'away', player: 'Gabriel', text: "🟨 Gabriel booked" },
+  { minute: 53, type: 'goal', team: 'away', player: 'Saka', text: "âš½ GOAL! Saka equalizes with a curler (1-1)" },
+  { minute: 58, type: 'goal', team: 'home', player: 'Salah', text: "âš½ GOAL! Salah again! Liverpool back in front (2-1)" },
+  { minute: 61, type: 'substitution', team: 'home', player: 'NÃºÃ±ez', text: "ðŸ” Sub: NÃºÃ±ez â†” Gakpo" },
+  { minute: 64, type: 'yellow', team: 'away', player: 'Gabriel', text: "ðŸŸ¨ Gabriel booked" },
 ];
 
 const DEMO_LINEUPS: { home: Lineup; away: Lineup } = {
@@ -68,7 +69,7 @@ const DEMO_LINEUPS: { home: Lineup; away: Lineup } = {
       { number: 1, name: 'Alisson', position: 'GK', row: 0 },
       { number: 66, name: 'TAA', position: 'RB', row: 1 },
       { number: 4, name: 'Van Dijk', position: 'CB', row: 1 },
-      { number: 5, name: 'Konaté', position: 'CB', row: 1 },
+      { number: 5, name: 'KonatÃ©', position: 'CB', row: 1 },
       { number: 26, name: 'Robertson', position: 'LB', row: 1 },
       { number: 8, name: 'Szoboszlai', position: 'CM', row: 2 },
       { number: 3, name: 'Mac Allister', position: 'CM', row: 2 },
@@ -86,7 +87,7 @@ const DEMO_LINEUPS: { home: Lineup; away: Lineup } = {
       { number: 2, name: 'Saliba', position: 'CB', row: 1 },
       { number: 6, name: 'Gabriel', position: 'CB', row: 1 },
       { number: 35, name: 'Zinchenko', position: 'LB', row: 1 },
-      { number: 8, name: 'Ødegaard', position: 'CM', row: 2 },
+      { number: 8, name: 'Ã˜degaard', position: 'CM', row: 2 },
       { number: 41, name: 'Rice', position: 'DM', row: 2 },
       { number: 29, name: 'Havertz', position: 'CM', row: 2 },
       { number: 7, name: 'Saka', position: 'RW', row: 3 },
@@ -111,13 +112,13 @@ const DEMO_MATCH = {
 const DEMO_MESSAGES: Message[] = [
   { 
     id: '1', 
-    text: 'What a goal by Salah! 🔥', 
+    text: 'What a goal by Salah! ðŸ”¥', 
     username: 'LiverpoolFan', 
     userId: 'user1', 
     matchMinute: 58, 
     reactions: { 
-      '🔥': { count: 5, userIds: ['user2', 'user3', 'user4', 'user5', 'user6'] },
-      '❤️': { count: 3, userIds: ['user7', 'user8', 'user9'] }
+      'ðŸ”¥': { count: 5, userIds: ['user2', 'user3', 'user4', 'user5', 'user6'] },
+      'â¤ï¸': { count: 3, userIds: ['user7', 'user8', 'user9'] }
     }
   },
   // ... other demo messages
@@ -152,7 +153,7 @@ export default function DemoMatch() {
   const lastTapRef = useRef<{ [key: string]: number }>({});
   const replyAnimValue = useRef(new Animated.Value(0)).current;
 
-  const EMOJI_REACTIONS = ['❤️', '🔥', '😂', '😢', '👎', '👏', '🎉'];
+  const EMOJI_REACTIONS = ['â¤ï¸', 'ðŸ”¥', 'ðŸ˜‚', 'ðŸ˜¢', 'ðŸ‘Ž', 'ðŸ‘', 'ðŸŽ‰'];
 
   useEffect(() => {
     Animated.timing(replyAnimValue, {
@@ -186,21 +187,21 @@ export default function DemoMatch() {
     setMessages(prev => prev.map(msg => {
       if (msg.id === messageId) {
         const reactions = { ...msg.reactions };
-        const heartReaction = reactions['❤️'] || { count: 0, userIds: [] };
+        const heartReaction = reactions['â¤ï¸'] || { count: 0, userIds: [] };
         
         if (heartReaction.userIds.includes(currentUserId)) {
           heartReaction.count--;
           heartReaction.userIds = heartReaction.userIds.filter(id => id !== currentUserId);
           
           if (heartReaction.count === 0) {
-            delete reactions['❤️'];
+            delete reactions['â¤ï¸'];
           } else {
-            reactions['❤️'] = heartReaction;
+            reactions['â¤ï¸'] = heartReaction;
           }
         } else {
           heartReaction.count++;
           heartReaction.userIds.push(currentUserId);
-          reactions['❤️'] = heartReaction;
+          reactions['â¤ï¸'] = heartReaction;
         }
         
         return { ...msg, reactions };
@@ -866,11 +867,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#2C2C2E',
     borderRadius: 16,
     padding: 10,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 12,
-    elevation: 10,
+    ...shadow({ y: 4, blur: 12, opacity: 0.3, elevation: 10 }),
     zIndex: 1000,
     minWidth: 200,
   },

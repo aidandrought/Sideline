@@ -20,6 +20,99 @@ export interface NewsArticle {
 
 // In-memory cache to fix "Article not found" bug
 let cachedArticles: NewsArticle[] = [];
+const responseCache = new Map<string, { expiresAt: number; data: any }>();
+const inFlight = new Map<string, Promise<any>>();
+const TOP_NEWS_TTL_MS = 6 * 60 * 60 * 1000;
+const MATCH_TTL_MS = 6 * 60 * 60 * 1000;
+const SEARCH_TTL_MS = 15 * 60 * 1000;
+let cooldownUntil = 0;
+
+export class RateLimitError extends Error {
+  retryAfter?: number;
+  constructor(retryAfter?: number) {
+    super('NewsAPI rate limited');
+    this.name = 'RateLimitError';
+    this.retryAfter = retryAfter;
+  }
+}
+
+const getRetryAfterSeconds = (response: Response): number | undefined => {
+  const value = response.headers.get('retry-after');
+  if (!value) return undefined;
+  const seconds = Number(value);
+  if (!Number.isNaN(seconds)) return seconds;
+  const date = Date.parse(value);
+  if (!Number.isNaN(date)) {
+    return Math.max(1, Math.ceil((date - Date.now()) / 1000));
+  }
+  return undefined;
+};
+
+const getCachedResponse = (cacheKey: string) => {
+  const entry = responseCache.get(cacheKey);
+  if (!entry) return null;
+  const isStale = Date.now() > entry.expiresAt;
+  return { data: entry.data, isStale };
+};
+
+const setCachedResponse = (cacheKey: string, data: any, ttlMs: number) => {
+  responseCache.set(cacheKey, { data, expiresAt: Date.now() + ttlMs });
+};
+
+const enforceCooldown = () => {
+  if (Date.now() < cooldownUntil) {
+    const remaining = Math.ceil((cooldownUntil - Date.now()) / 1000);
+    throw new RateLimitError(remaining);
+  }
+};
+
+const fetchJsonWithCache = async (cacheKey: string, ttlMs: number, url: string, signal?: AbortSignal) => {
+  const cached = getCachedResponse(cacheKey);
+  if (cached && !cached.isStale) return { data: cached.data, isStale: false };
+  if (cached && cached.isStale && Date.now() < cooldownUntil) {
+    return { data: cached.data, isStale: true };
+  }
+  if (inFlight.has(cacheKey)) return inFlight.get(cacheKey);
+
+  enforceCooldown();
+
+  const promise = (async () => {
+    try {
+      const response = await fetch(url, { signal });
+      if (response.status === 429) {
+        const retryAfter = getRetryAfterSeconds(response) ?? 60;
+        cooldownUntil = Date.now() + retryAfter * 1000;
+        if (cached && cached.isStale) {
+          return { data: cached.data, isStale: true };
+        }
+        throw new RateLimitError(retryAfter);
+      }
+      if (!response.ok) {
+        if (cached && cached.isStale) {
+          return { data: cached.data, isStale: true };
+        }
+        throw new Error(`News API error ${response.status}`);
+      }
+      const data = await response.json();
+      if (ttlMs > 0) {
+        setCachedResponse(cacheKey, data, ttlMs);
+      }
+      return { data, isStale: false };
+    } catch (error) {
+      if (cached && cached.isStale) {
+        return { data: cached.data, isStale: true };
+      }
+      throw error;
+    } finally {
+      inFlight.delete(cacheKey);
+    }
+  })();
+
+  inFlight.set(cacheKey, promise);
+  return promise;
+};
+
+
 
 class NewsAPI {
   private baseURL = 'https://newsapi.org/v2';
@@ -27,10 +120,10 @@ class NewsAPI {
   // ALLOWED sources (US, UK, Spanish, French, major European)
   private allowedSources = [
     // US
-    'ESPN', 'Fox Sports', 'Yahoo Sports', 'Bleacher Report', 'CBS Sports', 
+    'ESPN', 'ESPN FC', 'Fox Sports', 'Yahoo Sports', 'Bleacher Report', 'CBS Sports', 
     'NBC Sports', 'The Athletic', 'Sports Illustrated', 'ESPN FC',
     // UK
-    'BBC Sport', 'BBC', 'Sky Sports', 'The Guardian', 'The Telegraph', 
+    'BBC Sport', 'BBC', 'BBC News', 'Sky Sports', 'The Guardian', 'The Telegraph', 
     'Daily Mail', 'Mirror', 'The Sun', 'Express', 'The Independent',
     'Evening Standard', 'Football London', 'Goal.com', '90min', 'FourFourTwo',
     // Spanish
@@ -186,7 +279,7 @@ class NewsAPI {
    */
   private formatArticles(articles: any[]): NewsArticle[] {
     return articles
-      .filter(a => a.title && a.title !== '[Removed]' && a.description)
+      .filter(a => a.title && a.title !== '[Removed]' && a.url)
       .map((a, index) => ({
         id: `article_${index}_${Date.now()}`, // Unique ID that won't change
         title: a.title,
@@ -220,6 +313,7 @@ class NewsAPI {
    */
   async getSoccerNews(): Promise<NewsArticle[]> {
     try {
+      enforceCooldown();
       const queries = [
         'premier league',
         'champions league OR europa league',
@@ -231,48 +325,46 @@ class NewsAPI {
 
       for (const query of queries) {
         try {
-          const response = await fetch(
-            `${this.baseURL}/everything?q=${encodeURIComponent(query)}&language=en&sortBy=publishedAt&pageSize=15&apiKey=${API_CONFIG.NEWS_API_KEY}`
-          );
-          
-          if (response.ok) {
-            const data = await response.json();
-            if (data.articles) {
-              allArticles.push(...data.articles);
-            }
+          const cacheKey = `soccer:${query.toLowerCase()}`;
+          const url = `${this.baseURL}/everything?q=${encodeURIComponent(query)}&language=en&sortBy=publishedAt&pageSize=15&apiKey=${API_CONFIG.NEWS_API_KEY}`;
+          const { data, isStale } = await fetchJsonWithCache(cacheKey, TOP_NEWS_TTL_MS, url);
+          if (data.articles) {
+            allArticles.push(...data.articles);
           }
         } catch (err) {
+          if (err instanceof RateLimitError) {
+            throw err;
+          }
           console.log('Query failed, continuing...');
         }
       }
 
       if (allArticles.length > 0) {
-        // Filter by sources first (US/UK/Spanish/French only)
         const sourceFiltered = this.filterBySources(allArticles);
-        
-        // Then filter for soccer content
         const soccerFiltered = this.filterSoccerOnly(sourceFiltered);
-        
-        // Format articles
         const formatted = this.formatArticles(soccerFiltered);
-        
-        // Remove duplicates
         const unique = this.removeDuplicates(formatted);
-        
-        // Cache the articles
-        cachedArticles = unique.slice(0, 20);
-        
+
+        if (unique.length < 12) {
+          const unfilteredFormatted = this.formatArticles(allArticles);
+          const unfilteredUnique = this.removeDuplicates(unfilteredFormatted);
+          cachedArticles = unfilteredUnique.slice(0, 50);
+          return cachedArticles;
+        }
+
+        cachedArticles = unique.slice(0, 50);
         return cachedArticles;
       }
     } catch (error) {
+      if (error instanceof RateLimitError) {
+        throw error;
+      }
       console.log('Using mock soccer news data');
     }
 
-    // Fall back to mock data
     cachedArticles = this.getMockNews();
     return cachedArticles;
   }
-
   /**
    * Get article by ID - uses cache to fix "Article not found" bug
    */
@@ -289,25 +381,21 @@ class NewsAPI {
   /**
    * Search news
    */
-  async searchNews(query: string): Promise<NewsArticle[]> {
+  async searchNews(query: string, pageSize: number = 20, page: number = 1, signal?: AbortSignal): Promise<NewsArticle[]> {
     try {
       const soccerQuery = `${query} AND (soccer OR football OR premier league)`;
-      
-      const response = await fetch(
-        `${this.baseURL}/everything?q=${encodeURIComponent(soccerQuery)}&language=en&sortBy=relevancy&apiKey=${API_CONFIG.NEWS_API_KEY}`
-      );
-      
-      if (response.ok) {
-        const data = await response.json();
-        const sourceFiltered = this.filterBySources(data.articles || []);
-        const soccerFiltered = this.filterSoccerOnly(sourceFiltered);
-        return this.formatArticles(soccerFiltered);
-      }
+      const cacheKey = `search-basic:${soccerQuery.toLowerCase()}:${page}:${pageSize}`;
+      const url = `${this.baseURL}/everything?q=${encodeURIComponent(soccerQuery)}&language=en&sortBy=relevancy&pageSize=${pageSize}&page=${page}&apiKey=${API_CONFIG.NEWS_API_KEY}`;
+
+      const { data, isStale } = await fetchJsonWithCache(cacheKey, SEARCH_TTL_MS, url, signal);
+      const sourceFiltered = this.filterBySources(data.articles || []);
+      const soccerFiltered = this.filterSoccerOnly(sourceFiltered);
+      return this.formatArticles(soccerFiltered);
     } catch (error) {
+      if (error instanceof RateLimitError) throw error;
       console.error('Error searching news:', error);
     }
 
-    // Search in cached/mock news
     const mockNews = cachedArticles.length > 0 ? cachedArticles : this.getMockNews();
     return mockNews.filter(article =>
       article.title.toLowerCase().includes(query.toLowerCase()) ||
@@ -315,6 +403,175 @@ class NewsAPI {
     );
   }
 
+  /**
+   * Get paged soccer news for infinite scroll
+   */
+  async getSoccerNewsPage(page: number = 1, pageSize: number = 20, signal?: AbortSignal): Promise<{ articles: NewsArticle[]; totalResults: number; isStale?: boolean }> {
+    try {
+      const query = 'football OR soccer OR premier league OR champions league OR la liga OR serie a OR bundesliga OR ligue 1';
+      const cacheKey = `top-page:${page}:${pageSize}`;
+      const url = `${this.baseURL}/everything?q=${encodeURIComponent(query)}&language=en&sortBy=publishedAt&pageSize=${pageSize}&page=${page}&apiKey=${API_CONFIG.NEWS_API_KEY}`;
+
+      const { data, isStale } = await fetchJsonWithCache(cacheKey, TOP_NEWS_TTL_MS, url, signal);
+      const sourceFiltered = this.filterBySources(data.articles || []);
+      const soccerFiltered = this.filterSoccerOnly(sourceFiltered);
+      const formatted = this.formatArticles(soccerFiltered);
+      const unique = this.removeDuplicates(formatted);
+      return { articles: unique, totalResults: data.totalResults || unique.length, isStale };
+    } catch (error) {
+      if (error instanceof RateLimitError) throw error;
+      console.error('Error fetching paged news:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Search news with pagination metadata (page + pageSize)
+   */
+  async searchNewsPage(query: string, pageSize: number = 20, page: number = 1, signal?: AbortSignal): Promise<{ articles: NewsArticle[]; totalResults: number; isStale?: boolean }> {
+    try {
+      const soccerQuery = `${query} AND (soccer OR football OR premier league)`;
+      const cacheKey = `search-page:${soccerQuery.toLowerCase()}:${page}:${pageSize}`;
+      const url = `${this.baseURL}/everything?q=${encodeURIComponent(soccerQuery)}&language=en&sortBy=relevancy&pageSize=${pageSize}&page=${page}&apiKey=${API_CONFIG.NEWS_API_KEY}`;
+
+      const { data, isStale } = await fetchJsonWithCache(cacheKey, SEARCH_TTL_MS, url, signal);
+      const sourceFiltered = this.filterBySources(data.articles || []);
+      const soccerFiltered = this.filterSoccerOnly(sourceFiltered);
+      const formatted = this.formatArticles(soccerFiltered);
+      return { articles: formatted, totalResults: data.totalResults || formatted.length, isStale };
+    } catch (error) {
+      if (error instanceof RateLimitError) throw error;
+      console.error('Error searching news:', error);
+      throw error;
+    }
+  }
+  /**
+   * Get top news with pagination metadata
+   */
+  async getTopNews({ page = 1, pageSize = 20, signal }: { page?: number; pageSize?: number; signal?: AbortSignal }): Promise<{ articles: NewsArticle[]; totalResults: number; isStale?: boolean }> {
+    try {
+      const query = 'football OR soccer OR premier league OR champions league OR la liga OR serie a OR bundesliga OR ligue 1';
+      const cacheKey = `top:${page}:${pageSize}`;
+      const url = `${this.baseURL}/everything?q=${encodeURIComponent(query)}&language=en&sortBy=publishedAt&pageSize=${pageSize}&page=${page}&apiKey=${API_CONFIG.NEWS_API_KEY}`;
+
+      const { data, isStale } = await fetchJsonWithCache(cacheKey, TOP_NEWS_TTL_MS, url, signal);
+      const sourceFiltered = this.filterBySources(data.articles || []);
+      const soccerFiltered = this.filterSoccerOnly(sourceFiltered);
+      const formatted = this.formatArticles(soccerFiltered);
+      const unique = this.removeDuplicates(formatted);
+      return { articles: unique, totalResults: data.totalResults || unique.length, isStale };
+    } catch (error) {
+      if (error instanceof RateLimitError) throw error;
+      console.error('Error fetching top news:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Search news with pagination metadata
+   */
+  async searchNewsQuery({ q, page = 1, pageSize = 20, signal }: { q: string; page?: number; pageSize?: number; signal?: AbortSignal }): Promise<{ articles: NewsArticle[]; totalResults: number; isStale?: boolean }> {
+    try {
+      const soccerQuery = `${q} AND (soccer OR football OR premier league)`;
+      const cacheKey = `search:${soccerQuery.toLowerCase()}:${page}:${pageSize}`;
+      const url = `${this.baseURL}/everything?q=${encodeURIComponent(soccerQuery)}&language=en&sortBy=relevancy&pageSize=${pageSize}&page=${page}&apiKey=${API_CONFIG.NEWS_API_KEY}`;
+
+      const { data, isStale } = await fetchJsonWithCache(cacheKey, SEARCH_TTL_MS, url, signal);
+      const sourceFiltered = this.filterBySources(data.articles || []);
+      const soccerFiltered = this.filterSoccerOnly(sourceFiltered);
+      const formatted = this.formatArticles(soccerFiltered);
+      return { articles: formatted, totalResults: data.totalResults || formatted.length, isStale };
+    } catch (error) {
+      if (error instanceof RateLimitError) throw error;
+      console.error('Error searching news:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Match-specific news search (merged queries)
+   */
+    /**
+   * Match-specific news search (combined query + fallback)
+   */
+  async matchNews({ teamA, teamB, competition, pageSize = 10 }: { teamA: string; teamB: string; competition?: string; pageSize?: number }): Promise<{ articles: NewsArticle[]; isStale?: boolean }> {
+    const normalizedCompetition = competition ? competition.toLowerCase() : "";
+    const resultKey = `match:final:${teamA.toLowerCase()}:${teamB.toLowerCase()}:${normalizedCompetition}`;
+    const cachedResult = getCachedResponse(resultKey);
+    if (cachedResult && !cachedResult.isStale) {
+      return { articles: cachedResult.data, isStale: false };
+    }
+    if (cachedResult && cachedResult.isStale && Date.now() < cooldownUntil) {
+      return { articles: cachedResult.data, isStale: true };
+    }
+
+    const baseCompetition = competition ? ` OR ${competition}` : "";
+    const combinedQuery = `(${teamA} OR ${teamB}) AND (preview OR lineup OR injury OR "Champions League" OR UCL${baseCompetition})`;
+    const rawKey = `match:raw:${teamA.toLowerCase()}:${teamB.toLowerCase()}:${normalizedCompetition}`;
+    const url = `${this.baseURL}/everything?q=${encodeURIComponent(combinedQuery)}&language=en&sortBy=publishedAt&pageSize=30&apiKey=${API_CONFIG.NEWS_API_KEY}`;
+
+    try {
+      const { data, isStale } = await fetchJsonWithCache(rawKey, MATCH_TTL_MS, url);
+      const sourceFiltered = this.filterBySources(data.articles || []);
+      const soccerFiltered = this.filterSoccerOnly(sourceFiltered);
+      const formatted = this.formatArticles(soccerFiltered);
+
+      const seen = new Set<string>();
+      const baseResults = formatted.filter(article => {
+        if (!article?.title || !article?.url) return false;
+        const key = article.url.toLowerCase();
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+
+      let combined = baseResults;
+      if (combined.length < pageSize && !isStale) {
+        try {
+          const [teamAResult, teamBResult] = await Promise.all([
+            this.searchNewsQuery({ q: `${teamA} preview OR injury OR lineup`, pageSize: 20, page: 1 }),
+            this.searchNewsQuery({ q: `${teamB} preview OR injury OR lineup`, pageSize: 20, page: 1 })
+          ]);
+          const fallback = [...teamAResult.articles, ...teamBResult.articles];
+          combined = [...combined, ...fallback];
+        } catch (error) {
+          if (error instanceof RateLimitError) {
+            // Skip fallback when rate-limited
+          } else {
+            console.error("Error fetching match fallback news:", error);
+          }
+        }
+      }
+
+      const deduped = combined.filter(article => {
+        if (!article?.title || !article?.url) return false;
+        const key = article.url.toLowerCase();
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+
+      const sorted = deduped.sort((a, b) => {
+        return new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime();
+      });
+
+      const finalResults = sorted.slice(0, pageSize);
+      setCachedResponse(resultKey, finalResults, MATCH_TTL_MS);
+      return { articles: finalResults, isStale };
+    } catch (error) {
+      if (error instanceof RateLimitError) {
+        if (cachedResult) {
+          return { articles: cachedResult.data, isStale: true };
+        }
+        throw error;
+      }
+      console.error("Error fetching match news:", error);
+      if (cachedResult) {
+        return { articles: cachedResult.data, isStale: true };
+      }
+      return { articles: [], isStale: false };
+    }
+  }
   /**
    * Get news by team
    */

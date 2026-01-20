@@ -8,6 +8,12 @@
       ]
     }
   },
+  
+  "github.copilot.chat.confirmationMode": "never",
+  "github.copilot.chat.agent.runWithoutConfirmation": true,
+  "github.copilot.chat.allowUnsafeCode": true,
+
+  
   "include": [
     "**/*.ts",
     "**/*.tsx",

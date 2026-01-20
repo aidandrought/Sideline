@@ -7,7 +7,7 @@ import { useEffect, useState } from 'react';
 import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { footballAPI, Match } from '../../services/footballApi';
 import { matchDetailService, TeamForm, TeamNews } from '../../services/matchDetailService';
-import { newsAPI, NewsArticle } from '../../services/newsApi';
+import { newsAPI, NewsArticle, RateLimitError } from '../../services/newsApi';
 
 interface NewsReaction {
   [articleId: string]: 'up' | 'down' | null;
@@ -22,8 +22,12 @@ export default function MatchPreviewScreen() {
   const [homeNews, setHomeNews] = useState<TeamNews | null>(null);
   const [awayNews, setAwayNews] = useState<TeamNews | null>(null);
   const [relatedNews, setRelatedNews] = useState<NewsArticle[]>([]);
+  const [newsLoading, setNewsLoading] = useState(true);
+  const [newsUnavailable, setNewsUnavailable] = useState(false);
+  const [newsErrorMessage, setNewsErrorMessage] = useState<string | null>(null);
   const [newsReactions, setNewsReactions] = useState<NewsReaction>({});
   const [loading, setLoading] = useState(true);
+  const isLive = match?.status === 'live';
 
   useEffect(() => {
     loadMatchData();
@@ -46,12 +50,28 @@ export default function MatchPreviewScreen() {
         setAwayNews(await matchDetailService.getTeamNews(0));
 
         // Search for news about this fixture
-        const searchQuery = `${foundMatch.home} ${foundMatch.away}`;
-        const news = await newsAPI.searchNews(searchQuery);
-        setRelatedNews(news.slice(0, 5));
+        setNewsLoading(true);
+        const teamA = foundMatch.home;
+        const teamB = foundMatch.away;
+
+        const matchNewsResponse = await newsAPI.matchNews({
+          teamA,
+          teamB,
+          competition: foundMatch.league,
+          pageSize: 10
+        });
+
+        setRelatedNews(matchNewsResponse.articles);
+        setNewsUnavailable(matchNewsResponse.articles.length < 10);
+        setNewsErrorMessage(matchNewsResponse.isStale ? "News is temporarily rate-limited. Try again shortly." : null);
+        setNewsLoading(false);
       }
     } catch (error) {
+      if (error instanceof RateLimitError) {
+        setNewsErrorMessage('News is temporarily rate-limited. Try again shortly.');
+      }
       console.error('Error loading match preview:', error);
+      setNewsLoading(false);
     } finally {
       setLoading(false);
     }
@@ -84,17 +104,17 @@ export default function MatchPreviewScreen() {
   };
 
   if (loading) {
-    return (
-      <View style={styles.container}>
-        <View style={styles.header}>
+  return (
+      <View style={[styles.container, isLive && styles.containerLive]}>
+        <View style={[styles.header, isLive && styles.headerLive]}>
           <TouchableOpacity onPress={() => router.back()}>
-            <Ionicons name="chevron-back" size={28} color="#FFF" />
+            <Ionicons name="chevron-back" size={28} color={isLive ? '#FFF' : '#000'} />
           </TouchableOpacity>
-          <Text style={styles.headerTitle}>Match Preview</Text>
+          <Text style={[styles.headerTitle, isLive && styles.textLive]}>Match Preview</Text>
           <View style={{ width: 28 }} />
         </View>
         <View style={styles.loadingContainer}>
-          <Text style={styles.loadingText}>Loading preview...</Text>
+          <Text style={[styles.loadingText, isLive && styles.subTextLive]}>Loading preview...</Text>
         </View>
       </View>
     );
@@ -102,56 +122,56 @@ export default function MatchPreviewScreen() {
 
   if (!match) {
     return (
-      <View style={styles.container}>
-        <View style={styles.header}>
+      <View style={[styles.container, isLive && styles.containerLive]}>
+        <View style={[styles.header, isLive && styles.headerLive]}>
           <TouchableOpacity onPress={() => router.back()}>
-            <Ionicons name="chevron-back" size={28} color="#FFF" />
+            <Ionicons name="chevron-back" size={28} color={isLive ? '#FFF' : '#000'} />
           </TouchableOpacity>
         </View>
         <View style={styles.loadingContainer}>
-          <Text style={styles.loadingText}>Match not found</Text>
+          <Text style={[styles.loadingText, isLive && styles.subTextLive]}>Match not found</Text>
         </View>
       </View>
     );
   }
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, isLive && styles.containerLive]}>
       {/* Header */}
-      <View style={styles.header}>
+      <View style={[styles.header, isLive && styles.headerLive]}>
         <TouchableOpacity onPress={() => router.back()}>
-          <Ionicons name="chevron-back" size={28} color="#FFF" />
+          <Ionicons name="chevron-back" size={28} color={isLive ? '#FFF' : '#000'} />
         </TouchableOpacity>
-        <Text style={styles.headerTitle}>Match Preview</Text>
+        <Text style={[styles.headerTitle, isLive && styles.textLive]}>Match Preview</Text>
         <View style={{ width: 28 }} />
       </View>
 
       {/* Match Info Card */}
-      <View style={styles.matchCard}>
-        <Text style={styles.league}>{match.league}</Text>
+      <View style={[styles.matchCard, isLive && styles.cardLive]}>
+        <Text style={[styles.league, isLive && styles.subTextLive]}>{match.league}</Text>
         <View style={styles.teamsContainer}>
-          <Text style={styles.team}>{match.home}</Text>
-          <Text style={styles.vs}>VS</Text>
-          <Text style={styles.team}>{match.away}</Text>
+          <Text style={[styles.team, isLive && styles.textLive]}>{match.home}</Text>
+          <Text style={[styles.vs, isLive && styles.textLive]}>VS</Text>
+          <Text style={[styles.team, isLive && styles.textLive]}>{match.away}</Text>
         </View>
         <View style={styles.kickoffInfo}>
           <Ionicons name="calendar" size={18} color="#FFD60A" />
-          <Text style={styles.kickoffText}>{getKickoffTime()}</Text>
+          <Text style={[styles.kickoffText, isLive && styles.textLive]}>{getKickoffTime()}</Text>
         </View>
         <View style={styles.kickoffInfo}>
           <Ionicons name="location" size={18} color="#FFD60A" />
-          <Text style={styles.kickoffText}>Stadium TBD</Text>
+          <Text style={[styles.kickoffText, isLive && styles.textLive]}>Stadium TBD</Text>
         </View>
       </View>
 
       <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
         {/* Team Form */}
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Recent Form</Text>
+          <Text style={[styles.sectionTitle, isLive && styles.textLive]}>Recent Form</Text>
           
           <View style={styles.formContainer}>
-            <View style={styles.teamFormCard}>
-              <Text style={styles.teamFormName}>{match.home}</Text>
+            <View style={[styles.teamFormCard, isLive && styles.cardLive]}>
+              <Text style={[styles.teamFormName, isLive && styles.textLive]}>{match.home}</Text>
               <View style={styles.formRow}>
                 {homeForm?.last5.map((result, idx) => (
                   <View key={idx} style={styles.formBadge}>
@@ -161,8 +181,8 @@ export default function MatchPreviewScreen() {
               </View>
             </View>
 
-            <View style={styles.teamFormCard}>
-              <Text style={styles.teamFormName}>{match.away}</Text>
+            <View style={[styles.teamFormCard, isLive && styles.cardLive]}>
+              <Text style={[styles.teamFormName, isLive && styles.textLive]}>{match.away}</Text>
               <View style={styles.formRow}>
                 {awayForm?.last5.map((result, idx) => (
                   <View key={idx} style={styles.formBadge}>
@@ -175,17 +195,17 @@ export default function MatchPreviewScreen() {
         </View>
 
         {/* Team News & Injuries */}
-        {(homeNews?.injuries.length || awayNews?.injuries.length) && (
+        {((homeNews?.injuries?.length ?? 0) > 0 || (awayNews?.injuries?.length ?? 0) > 0) && (
           <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Team News</Text>
+            <Text style={[styles.sectionTitle, isLive && styles.textLive]}>Team News</Text>
             
             {homeNews?.injuries && homeNews.injuries.length > 0 && (
-              <View style={styles.newsCard}>
-                <Text style={styles.newsTeam}>{match.home}</Text>
+              <View style={[styles.newsCard, isLive && styles.cardLive]}>
+                <Text style={[styles.newsTeam, isLive && styles.textLive]}>{match.home}</Text>
                 {homeNews.injuries.map((injury, idx) => (
                   <View key={idx} style={styles.injuryItem}>
                     <Ionicons name="medical" size={16} color="#FF3B30" />
-                    <Text style={styles.injuryText}>
+                    <Text style={[styles.injuryText, isLive && styles.subTextLive]}>
                       {injury.player} - {injury.reason}
                     </Text>
                   </View>
@@ -194,12 +214,12 @@ export default function MatchPreviewScreen() {
             )}
 
             {awayNews?.injuries && awayNews.injuries.length > 0 && (
-              <View style={styles.newsCard}>
-                <Text style={styles.newsTeam}>{match.away}</Text>
+              <View style={[styles.newsCard, isLive && styles.cardLive]}>
+                <Text style={[styles.newsTeam, isLive && styles.textLive]}>{match.away}</Text>
                 {awayNews.injuries.map((injury, idx) => (
                   <View key={idx} style={styles.injuryItem}>
                     <Ionicons name="medical" size={16} color="#FF3B30" />
-                    <Text style={styles.injuryText}>
+                    <Text style={[styles.injuryText, isLive && styles.subTextLive]}>
                       {injury.player} - {injury.reason}
                     </Text>
                   </View>
@@ -210,54 +230,78 @@ export default function MatchPreviewScreen() {
         )}
 
         {/* Related News */}
-        {relatedNews.length > 0 && (
+        {(newsLoading || relatedNews.length > 0) && (
           <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Latest News</Text>
-            
-            {relatedNews.map((article) => (
-              <View key={article.id} style={styles.articleCard}>
-                <TouchableOpacity
-                  onPress={() => router.push(`/newsDetail/${encodeURIComponent(article.id)}` as any)}
-                >
-                  <Text style={styles.articleTitle}>{article.title}</Text>
-                  <Text style={styles.articleDescription} numberOfLines={2}>
-                    {article.description}
+            <Text style={[styles.sectionTitle, isLive && styles.textLive]}>Latest News</Text>
+
+            {newsLoading ? (
+              <Text style={[styles.loadingText, isLive && styles.subTextLive]}>Loading news...</Text>
+            ) : (
+              <>
+                {relatedNews.map((article) => (
+                  <View key={article.id} style={[styles.articleCard, isLive && styles.cardLive]}>
+                    <TouchableOpacity
+                      onPress={() => router.push({ pathname: '/news/reader', params: { url: article.url, title: article.title, source: article.source, author: article.author || '', publishedAt: article.publishedAt, imageUrl: article.imageUrl || '' } } as any)}
+                    >
+                      <Text style={[styles.articleTitle, isLive && styles.textLive]}>{article.title}</Text>
+                      <Text style={[styles.articleDescription, isLive && styles.subTextLive]} numberOfLines={2}>
+                        {article.description}
+                      </Text>
+                      <Text style={[styles.articleSource, isLive && styles.subTextLive]}>{article.source}</Text>
+                    </TouchableOpacity>
+
+                    {/* Thumbs Up/Down */}
+                    <View style={styles.articleActions}>
+                      <TouchableOpacity
+                        style={[
+                          styles.thumbButton,
+                          newsReactions[article.id] === 'up' && styles.thumbButtonActive
+                        ]}
+                        onPress={() => handleNewsReaction(article.id, 'up')}
+                      >
+                        <Ionicons 
+                          name="thumbs-up" 
+                          size={18} 
+                          color={newsReactions[article.id] === 'up' ? '#34C759' : '#666'} 
+                        />
+                      </TouchableOpacity>
+
+                      <TouchableOpacity
+                        style={[
+                          styles.thumbButton,
+                          newsReactions[article.id] === 'down' && styles.thumbButtonActive
+                        ]}
+                        onPress={() => handleNewsReaction(article.id, 'down')}
+                      >
+                        <Ionicons 
+                          name="thumbs-down" 
+                          size={18} 
+                          color={newsReactions[article.id] === 'down' ? '#FF3B30' : '#666'} 
+                        />
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                ))}
+                {relatedNews.length > 0 && (
+                  <TouchableOpacity
+                    style={[styles.loadMoreButton, isLive && styles.cardLive]}
+                    onPress={() => router.push({ pathname: '/(tabs)/explore', params: { initialTab: 'news', mode: 'news', q: `${match.home} ${match.away}` } } as any)}
+                  >
+                    <Text style={[styles.loadMoreText, isLive && styles.textLive]}>Load more</Text>
+                  </TouchableOpacity>
+                )}
+                {newsErrorMessage && (
+                  <Text style={[styles.newsUnavailable, isLive && styles.subTextLive]}>
+                    News is temporarily rate-limited. Try again shortly.
                   </Text>
-                  <Text style={styles.articleSource}>{article.source}</Text>
-                </TouchableOpacity>
-
-                {/* Thumbs Up/Down */}
-                <View style={styles.articleActions}>
-                  <TouchableOpacity
-                    style={[
-                      styles.thumbButton,
-                      newsReactions[article.id] === 'up' && styles.thumbButtonActive
-                    ]}
-                    onPress={() => handleNewsReaction(article.id, 'up')}
-                  >
-                    <Ionicons 
-                      name="thumbs-up" 
-                      size={18} 
-                      color={newsReactions[article.id] === 'up' ? '#34C759' : '#666'} 
-                    />
-                  </TouchableOpacity>
-
-                  <TouchableOpacity
-                    style={[
-                      styles.thumbButton,
-                      newsReactions[article.id] === 'down' && styles.thumbButtonActive
-                    ]}
-                    onPress={() => handleNewsReaction(article.id, 'down')}
-                  >
-                    <Ionicons 
-                      name="thumbs-down" 
-                      size={18} 
-                      color={newsReactions[article.id] === 'down' ? '#FF3B30' : '#666'} 
-                    />
-                  </TouchableOpacity>
-                </View>
-              </View>
-            ))}
+                )}
+                {newsUnavailable && (
+                  <Text style={[styles.newsUnavailable, isLive && styles.subTextLive]}>
+                    More news not available
+                  </Text>
+                )}
+              </>
+            )}
           </View>
         )}
 
@@ -265,9 +309,9 @@ export default function MatchPreviewScreen() {
       </ScrollView>
 
       {/* Chat Opens In... Banner */}
-      <View style={styles.chatBanner}>
+      <View style={[styles.chatBanner, isLive && styles.cardLive]}>
         <Ionicons name="time-outline" size={20} color="#0066CC" />
-        <Text style={styles.chatBannerText}>Chat opens 45 minutes before kickoff</Text>
+        <Text style={[styles.chatBannerText, isLive && styles.textLive]}>Chat opens 45 minutes before kickoff</Text>
       </View>
     </View>
   );
@@ -276,7 +320,7 @@ export default function MatchPreviewScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#0A0A0A',
+    backgroundColor: '#F5F5F7',
   },
   header: {
     flexDirection: 'row',
@@ -285,12 +329,27 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingTop: 60,
     paddingBottom: 15,
-    backgroundColor: '#1C1C1E',
+    backgroundColor: '#FFF',
   },
   headerTitle: {
     fontSize: 18,
     fontWeight: '700',
+    color: '#000',
+  },
+  containerLive: {
+    backgroundColor: '#0A0A0A',
+  },
+  headerLive: {
+    backgroundColor: '#1C1C1E',
+  },
+  cardLive: {
+    backgroundColor: '#1C1C1E',
+  },
+  textLive: {
     color: '#FFF',
+  },
+  subTextLive: {
+    color: '#8E8E93',
   },
   loadingContainer: {
     flex: 1,
@@ -299,10 +358,10 @@ const styles = StyleSheet.create({
   },
   loadingText: {
     fontSize: 16,
-    color: '#8E8E93',
+    color: '#666',
   },
   matchCard: {
-    backgroundColor: '#1C1C1E',
+    backgroundColor: '#FFF',
     margin: 20,
     padding: 24,
     borderRadius: 16,
@@ -311,7 +370,7 @@ const styles = StyleSheet.create({
   league: {
     fontSize: 14,
     fontWeight: '600',
-    color: '#8E8E93',
+    color: '#666',
     marginBottom: 16,
   },
   teamsContainer: {
@@ -321,13 +380,13 @@ const styles = StyleSheet.create({
   team: {
     fontSize: 24,
     fontWeight: '800',
-    color: '#FFF',
+    color: '#000',
     marginVertical: 4,
   },
   vs: {
     fontSize: 16,
     fontWeight: '600',
-    color: '#8E8E93',
+    color: '#666',
     marginVertical: 8,
   },
   kickoffInfo: {
@@ -339,7 +398,7 @@ const styles = StyleSheet.create({
   kickoffText: {
     fontSize: 14,
     fontWeight: '600',
-    color: '#FFF',
+    color: '#000',
   },
   content: {
     flex: 1,
@@ -351,21 +410,21 @@ const styles = StyleSheet.create({
   sectionTitle: {
     fontSize: 20,
     fontWeight: '800',
-    color: '#FFF',
+    color: '#000',
     marginBottom: 16,
   },
   formContainer: {
     gap: 12,
   },
   teamFormCard: {
-    backgroundColor: '#1C1C1E',
+    backgroundColor: '#FFF',
     borderRadius: 12,
     padding: 16,
   },
   teamFormName: {
     fontSize: 16,
     fontWeight: '700',
-    color: '#FFF',
+    color: '#000',
     marginBottom: 12,
   },
   formRow: {
@@ -373,7 +432,7 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   formBadge: {
-    backgroundColor: '#2C2C2E',
+    backgroundColor: '#E5E7EB',
     borderRadius: 8,
     padding: 8,
     minWidth: 40,
@@ -383,7 +442,7 @@ const styles = StyleSheet.create({
     fontSize: 18,
   },
   newsCard: {
-    backgroundColor: '#1C1C1E',
+    backgroundColor: '#FFF',
     borderRadius: 12,
     padding: 16,
     marginBottom: 12,
@@ -391,7 +450,7 @@ const styles = StyleSheet.create({
   newsTeam: {
     fontSize: 16,
     fontWeight: '700',
-    color: '#FFF',
+    color: '#000',
     marginBottom: 12,
   },
   injuryItem: {
@@ -402,10 +461,10 @@ const styles = StyleSheet.create({
   },
   injuryText: {
     fontSize: 14,
-    color: '#8E8E93',
+    color: '#666',
   },
   articleCard: {
-    backgroundColor: '#1C1C1E',
+    backgroundColor: '#FFF',
     borderRadius: 12,
     padding: 16,
     marginBottom: 12,
@@ -413,13 +472,13 @@ const styles = StyleSheet.create({
   articleTitle: {
     fontSize: 16,
     fontWeight: '700',
-    color: '#FFF',
+    color: '#000',
     marginBottom: 8,
     lineHeight: 22,
   },
   articleDescription: {
     fontSize: 14,
-    color: '#8E8E93',
+    color: '#666',
     marginBottom: 8,
     lineHeight: 20,
   },
@@ -434,7 +493,12 @@ const styles = StyleSheet.create({
     gap: 12,
     paddingTop: 12,
     borderTopWidth: 1,
-    borderTopColor: '#2C2C2E',
+    borderTopColor: '#E5E7EB',
+  },
+  newsUnavailable: {
+    fontSize: 13,
+    color: '#666',
+    marginTop: 8,
   },
   thumbButton: {
     flexDirection: 'row',

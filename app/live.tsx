@@ -1,7 +1,8 @@
-import { Ionicons } from '@expo/vector-icons';
+﻿import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { RefreshControl, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { shadow } from '../components/styleUtils';
 import { footballAPI, Match } from '../services/footballApi';
 
 export default function LiveScreen() {
@@ -171,11 +172,7 @@ const styles = StyleSheet.create({
     marginBottom: 15,
     borderRadius: 16,
     padding: 20,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.08,
-    shadowRadius: 8,
-    elevation: 3,
+    ...shadow({ y: 2, blur: 8, opacity: 0.08, elevation: 3 }),
   },
   matchHeader: {
     flexDirection: 'row',

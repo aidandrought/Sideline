@@ -1,4 +1,4 @@
-// app/upcoming.tsx
+﻿// app/upcoming.tsx
 // IMPROVED: Date grouping, better organization
 
 import { Ionicons } from '@expo/vector-icons';
@@ -7,6 +7,7 @@ import { onAuthStateChanged } from 'firebase/auth';
 import { addDoc, collection, deleteDoc, getDocs, query, where } from 'firebase/firestore';
 import { useEffect, useState } from 'react';
 import { Alert, Image, RefreshControl, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { shadow } from '../components/styleUtils';
 import { useAuth } from '../context/AuthContext';
 import { auth, db } from '../firebaseConfig';
 import { footballAPI, Match } from '../services/footballApi';
@@ -383,11 +384,7 @@ const styles = StyleSheet.create({
     marginBottom: 12,
     borderRadius: 16,
     padding: 20,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.08,
-    shadowRadius: 8,
-    elevation: 3,
+    ...shadow({ y: 2, blur: 8, opacity: 0.08, elevation: 3 }),
   },
   matchHeader: {
     flexDirection: 'row',

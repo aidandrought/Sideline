@@ -1,16 +1,42 @@
-import { Ionicons } from '@expo/vector-icons';
+﻿import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
-import { useState } from 'react';
-import { Alert, ScrollView, StyleSheet, Switch, Text, TouchableOpacity, View } from 'react-native';
+import { useEffect, useMemo, useState } from 'react';
+import {
+  ActivityIndicator,
+  Alert,
+  FlatList,
+  Image,
+  Modal,
+  ScrollView,
+  StyleSheet,
+  Switch,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View
+} from 'react-native';
+import { shadow } from '../components/styleUtils';
 import { useAuth } from '../context/AuthContext';
+import { Community, communityService } from '../services/communityService';
 
 export default function SettingsScreen() {
   const router = useRouter();
-  const { userProfile, logout } = useAuth();
+  const { userProfile, logout, updateUserProfile } = useAuth();
   const [notificationsEnabled, setNotificationsEnabled] = useState(true);
   const [liveScoresEnabled, setLiveScoresEnabled] = useState(true);
   const [chatNotifications, setChatNotifications] = useState(true);
   const [darkModeAuto, setDarkModeAuto] = useState(true);
+
+  const [favoriteTeams, setFavoriteTeams] = useState<string[]>(userProfile?.followedTeams ?? []);
+  const [favoriteLeagues, setFavoriteLeagues] = useState<string[]>(userProfile?.followedLeagues ?? []);
+  const [pendingTeams, setPendingTeams] = useState<string[]>([]);
+  const [pendingLeagues, setPendingLeagues] = useState<string[]>([]);
+  const [teamModalVisible, setTeamModalVisible] = useState(false);
+  const [leagueModalVisible, setLeagueModalVisible] = useState(false);
+  const [teamSearch, setTeamSearch] = useState('');
+  const [leagueSearch, setLeagueSearch] = useState('');
+  const [allCommunities, setAllCommunities] = useState<Community[]>([]);
+  const [loadingCommunities, setLoadingCommunities] = useState(false);
 
   const handleLogout = () => {
     Alert.alert(
@@ -28,6 +54,120 @@ export default function SettingsScreen() {
         }
       ]
     );
+  };
+
+  useEffect(() => {
+    setFavoriteTeams(userProfile?.followedTeams ?? []);
+    setFavoriteLeagues(userProfile?.followedLeagues ?? []);
+  }, [userProfile]);
+
+  useEffect(() => {
+    const cached = communityService.getCachedAllCommunities();
+    if (cached?.data.length) {
+      setAllCommunities(cached.data);
+    }
+
+    let isMounted = true;
+    setLoadingCommunities(true);
+    communityService.getAllCommunities()
+      .then(communities => {
+        if (isMounted) {
+          setAllCommunities(communities);
+        }
+      })
+      .finally(() => {
+        if (isMounted) {
+          setLoadingCommunities(false);
+        }
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  const teamOptions = useMemo(
+    () => allCommunities.filter(c => c.type === 'team'),
+    [allCommunities]
+  );
+
+  const leagueOptions = useMemo(
+    () => allCommunities.filter(c => c.type === 'league'),
+    [allCommunities]
+  );
+
+  const filteredTeams = useMemo(() => {
+    const query = teamSearch.trim().toLowerCase();
+    if (!query) return teamOptions;
+    return teamOptions.filter(team =>
+      team.name.toLowerCase().includes(query) ||
+      (team.league && team.league.toLowerCase().includes(query))
+    );
+  }, [teamOptions, teamSearch]);
+
+  const filteredLeagues = useMemo(() => {
+    const query = leagueSearch.trim().toLowerCase();
+    if (!query) return leagueOptions;
+    return leagueOptions.filter(league =>
+      league.name.toLowerCase().includes(query) ||
+      (league.country && league.country.toLowerCase().includes(query))
+    );
+  }, [leagueOptions, leagueSearch]);
+
+  const openTeamsModal = () => {
+    setPendingTeams(favoriteTeams);
+    setTeamSearch('');
+    setTeamModalVisible(true);
+  };
+
+  const openLeaguesModal = () => {
+    setPendingLeagues(favoriteLeagues);
+    setLeagueSearch('');
+    setLeagueModalVisible(true);
+  };
+
+  const togglePendingTeam = (teamName: string) => {
+    setPendingTeams(prev =>
+      prev.includes(teamName) ? prev.filter(name => name !== teamName) : [...prev, teamName]
+    );
+  };
+
+  const togglePendingLeague = (leagueName: string) => {
+    setPendingLeagues(prev =>
+      prev.includes(leagueName) ? prev.filter(name => name !== leagueName) : [...prev, leagueName]
+    );
+  };
+
+  const saveTeams = async () => {
+    if (!userProfile) {
+      Alert.alert('Sign in required', 'Please sign in to save favorite teams.');
+      return;
+    }
+
+    try {
+      await updateUserProfile({ followedTeams: pendingTeams });
+      setFavoriteTeams(pendingTeams);
+      setTeamModalVisible(false);
+    } catch (error) {
+      console.error('Error saving favorite teams:', error);
+      Alert.alert('Unable to save', 'Please try again in a moment.');
+    }
+  };
+
+  const saveLeagues = async () => {
+    if (!userProfile) {
+      Alert.alert('Sign in required', 'Please sign in to save favorite leagues.');
+      return;
+    }
+
+    try {
+      await updateUserProfile({ followedLeagues: pendingLeagues });
+      setFavoriteLeagues(pendingLeagues);
+      setLeagueModalVisible(false);
+    } catch (error) {
+      console.error('Error saving favorite leagues:', error);
+      Alert.alert('Unable to save', 'Please try again in a moment.');
+    }
   };
 
   return (
@@ -355,11 +495,7 @@ const styles = StyleSheet.create({
     marginHorizontal: 20,
     padding: 20,
     borderRadius: 16,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.08,
-    shadowRadius: 8,
-    elevation: 3,
+    ...shadow({ y: 2, blur: 8, opacity: 0.08, elevation: 3 }),
   },
   profileAvatar: {
     width: 60,
@@ -475,3 +611,12 @@ const styles = StyleSheet.create({
     color: '#999',
   },
 });
+
+
+
+
+
+
+
+
+

@@ -1,82 +1,81 @@
-// app/leagueCommunity/[id].tsx
-// League Community Detail Screen - News, Full Table, Recent Results, Upcoming
+﻿// app/leagueCommunity/[id].tsx
+// League Community Screen with Full Standings Table
 
 import { Ionicons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
 import {
-    ActivityIndicator,
-    Image,
-    RefreshControl,
-    ScrollView,
-    StyleSheet,
-    Text,
-    TouchableOpacity,
-    View
+  ActivityIndicator,
+  Image,
+  RefreshControl,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View
 } from 'react-native';
+import { shadow } from '../../components/styleUtils';
 import { useAuth } from '../../context/AuthContext';
+import { footballAPI, LeagueStandingsResponse, Match } from '../../services/footballApi';
 import { communityService } from '../../services/communityService';
-import { FinishedMatch, footballAPI, LeagueStanding, Match } from '../../services/footballApi';
-import { newsAPI, NewsArticle } from '../../services/newsApi';
 
 export default function LeagueCommunityScreen() {
-  const router = useRouter();
   const { id } = useLocalSearchParams();
+  const router = useRouter();
   const { userProfile } = useAuth();
-  
+  const leagueId = Number(id);
+
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [leagueName, setLeagueName] = useState('');
-  const [leagueLogo, setLeagueLogo] = useState('');
-  const [country, setCountry] = useState('');
-  
-  const [isFollowing, setIsFollowing] = useState(false);
-  const [news, setNews] = useState<NewsArticle[]>([]);
-  const [recentMatches, setRecentMatches] = useState<FinishedMatch[]>([]);
+  const [leagueInfo, setLeagueInfo] = useState<any>(null);
+  const [standings, setStandings] = useState<LeagueStandingsResponse | null>(null);
   const [upcomingMatches, setUpcomingMatches] = useState<Match[]>([]);
-  const [leagueTable, setLeagueTable] = useState<LeagueStanding[]>([]);
+  const [isFollowing, setIsFollowing] = useState(false);
 
   useEffect(() => {
     loadLeagueData();
-  }, [id]);
+  }, [leagueId]);
+
+  useEffect(() => {
+    if (userProfile?.uid) {
+      checkFollowStatus();
+    }
+  }, [userProfile, leagueId]);
 
   const loadLeagueData = async () => {
     try {
       setLoading(true);
-      const leagueId = parseInt(id as string);
-      
+
       // Get league info from communities
-      const community = await communityService.getCommunityById(leagueId, 'league');
-      if (community) {
-        setLeagueName(community.name);
-        setLeagueLogo(community.logo);
-        setCountry(community.country || '');
-      }
-      
-      // Check if following
-      if (userProfile) {
-        const following = await communityService.isFollowing(userProfile.uid, leagueId);
-        setIsFollowing(following);
-      }
-      
-      // Load all data in parallel
-      const [newsData, recentData, upcomingData, standingsData] = await Promise.all([
-        newsAPI.searchNews(community?.name || ''),
-        footballAPI.getLeagueRecentMatches(leagueId, 6),
-        footballAPI.getLeagueUpcomingMatches(leagueId, 10),
-        footballAPI.getLeagueStandings(leagueId)
-      ]);
-      
-      setNews(newsData.slice(0, 5));
-      setRecentMatches(recentData.slice(0, 10));
-      setUpcomingMatches(upcomingData);
-      setLeagueTable(standingsData);
-      
+      const league = await communityService.getCommunityById(leagueId, 'league');
+      setLeagueInfo(league);
+
+      // Get league standings
+      const standingsData = await footballAPI.getLeagueStandingsByCurrentSeason(leagueId);
+      setStandings(standingsData);
+
+      // Get upcoming matches for this league
+      const upcoming = await footballAPI.getLeagueUpcomingMatches(leagueId, 8);
+      setUpcomingMatches(upcoming);
+
     } catch (error) {
       console.error('Error loading league data:', error);
     } finally {
       setLoading(false);
     }
+  };
+
+  const checkFollowStatus = async () => {
+    if (!userProfile?.uid) return;
+    const following = await communityService.isFollowing(userProfile.uid, leagueId);
+    setIsFollowing(following);
+  };
+
+  const toggleFollow = async () => {
+    if (!userProfile?.uid || !leagueInfo) return;
+    
+    await communityService.toggleFollow(userProfile.uid, leagueId, 'league');
+    setIsFollowing(!isFollowing);
   };
 
   const onRefresh = async () => {
@@ -85,41 +84,47 @@ export default function LeagueCommunityScreen() {
     setRefreshing(false);
   };
 
-  const handleFollow = async () => {
-    if (!userProfile) return;
-    
-    try {
-      const leagueId = parseInt(id as string);
-      await communityService.toggleFollow(userProfile.uid, leagueId, 'league');
-      setIsFollowing(!isFollowing);
-    } catch (error) {
-      console.error('Error toggling follow:', error);
-    }
-  };
-
-  const formatDate = (dateString: string) => {
+  const formatUpcomingDate = (dateString: string): string => {
     const date = new Date(dateString);
-    const today = new Date();
-    const diff = Math.floor((today.getTime() - date.getTime()) / (1000 * 60 * 60 * 24));
+    const dayName = date.toLocaleDateString('en-US', { weekday: 'short' });
+    const time = date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
     
-    if (diff === 0) return 'Today';
-    if (diff === 1) return 'Yesterday';
-    if (diff < 7) return `${diff} days ago`;
-    return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    return `${dayName} ${time}`;
   };
 
-  const getFormColor = (form: string, index: number) => {
-    const result = form[index];
+  const getFormColor = (result: string): string => {
     if (result === 'W') return '#34C759';
-    if (result === 'D') return '#FF9500';
+    if (result === 'D') return '#FFD60A';
     if (result === 'L') return '#FF3B30';
-    return '#E5E5E5';
+    return '#8E8E93';
   };
 
   if (loading) {
     return (
-      <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color="#0066CC" />
+      <View style={styles.container}>
+        <View style={styles.header}>
+          <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
+            <Ionicons name="chevron-back" size={24} color="#000" />
+          </TouchableOpacity>
+        </View>
+        <View style={styles.loadingContainer}>
+          <ActivityIndicator size="large" color="#0066CC" />
+        </View>
+      </View>
+    );
+  }
+
+  if (!leagueInfo) {
+    return (
+      <View style={styles.container}>
+        <View style={styles.header}>
+          <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
+            <Ionicons name="chevron-back" size={24} color="#000" />
+          </TouchableOpacity>
+        </View>
+        <View style={styles.errorContainer}>
+          <Text style={styles.errorText}>League not found</Text>
+        </View>
       </View>
     );
   }
@@ -129,78 +134,164 @@ export default function LeagueCommunityScreen() {
       {/* Header */}
       <View style={styles.header}>
         <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
-          <Ionicons name="arrow-back" size={24} color="#000" />
+          <Ionicons name="chevron-back" size={24} color="#000" />
         </TouchableOpacity>
-        <View style={styles.headerInfo}>
-          {leagueLogo ? (
-            <Image source={{ uri: leagueLogo }} style={styles.headerLogo} resizeMode="contain" />
+        
+        <View style={styles.headerLeague}>
+          {leagueInfo.logo ? (
+            <Image 
+              source={{ uri: leagueInfo.logo }} 
+              style={styles.headerLogo}
+              resizeMode="contain"
+            />
           ) : (
-            <Ionicons name="trophy" size={32} color="#0066CC" />
+            <View style={styles.headerLogoPlaceholder}>
+              <Ionicons name="trophy" size={20} color="#0066CC" />
+            </View>
           )}
-          <View>
-            <Text style={styles.headerTitle}>{leagueName}</Text>
-            {country && <Text style={styles.headerCountry}>{country}</Text>}
-          </View>
+          <Text style={styles.headerTitle}>{leagueInfo.name}</Text>
         </View>
-        <TouchableOpacity onPress={handleFollow} style={styles.followButton}>
-          <Ionicons 
-            name={isFollowing ? "checkmark" : "add"} 
-            size={20} 
-            color={isFollowing ? "#0066CC" : "#FFF"} 
-          />
+
+        <TouchableOpacity 
+          onPress={() => router.push('/profile' as any)} 
+          style={styles.profileButton}
+        >
+          <Ionicons name="person" size={20} color="#0066CC" />
         </TouchableOpacity>
       </View>
 
-      <ScrollView 
+      <ScrollView
         style={styles.content}
         showsVerticalScrollIndicator={false}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
       >
-        {/* League Table */}
-        {leagueTable.length > 0 && (
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Standings</Text>
+        {/* League Info Card */}
+        <View style={styles.leagueCard}>
+          <View style={styles.leagueCardHeader}>
+            {leagueInfo.logo && (
+              <Image 
+                source={{ uri: leagueInfo.logo }} 
+                style={styles.leagueLogo}
+                resizeMode="contain"
+              />
+            )}
+            <View style={styles.leagueDetails}>
+              <Text style={styles.leagueName}>{leagueInfo.name}</Text>
+              {leagueInfo.country && (
+                <Text style={styles.leagueCountry}>{leagueInfo.country}</Text>
+              )}
+              {standings?.season && (
+                <Text style={styles.leagueSeason}>Season {standings.season}</Text>
+              )}
+            </View>
+          </View>
+
+          <TouchableOpacity
+            style={[styles.followButton, isFollowing && styles.followingButton]}
+            onPress={toggleFollow}
+          >
+            <Ionicons 
+              name={isFollowing ? 'checkmark' : 'add'} 
+              size={18} 
+              color={isFollowing ? '#0066CC' : '#FFF'} 
+            />
+            <Text style={[styles.followButtonText, isFollowing && styles.followingButtonText]}>
+              {isFollowing ? 'Following' : 'Follow'}
+            </Text>
+          </TouchableOpacity>
+        </View>
+
+        {/* Standings Table */}
+        {standings && standings.groups.map((group, groupIndex) => (
+          <View key={groupIndex} style={styles.section}>
+            <Text style={styles.sectionTitle}>{group.name}</Text>
+            
             <View style={styles.tableCard}>
+              {/* Table Header */}
               <View style={styles.tableHeader}>
-                <Text style={styles.tableHeaderRank}>#</Text>
+                <Text style={styles.tableHeaderPos}>#</Text>
                 <Text style={styles.tableHeaderTeam}>Team</Text>
                 <Text style={styles.tableHeaderStat}>P</Text>
+                <Text style={styles.tableHeaderStat}>W</Text>
+                <Text style={styles.tableHeaderStat}>D</Text>
+                <Text style={styles.tableHeaderStat}>L</Text>
                 <Text style={styles.tableHeaderStat}>GD</Text>
-                <Text style={styles.tableHeaderPoints}>Pts</Text>
+                <Text style={styles.tableHeaderPts}>PTS</Text>
               </View>
-              {leagueTable.map((team, index) => (
-                <View 
-                  key={team.team.id}
+
+              {/* Table Rows */}
+              {group.standings.map((standing, index) => (
+                <TouchableOpacity
+                  key={standing.team.id}
                   style={[
                     styles.tableRow,
-                    index < 4 && styles.tableRowChampions,
-                    index >= 4 && index < 6 && styles.tableRowEuropa,
-                    index >= leagueTable.length - 3 && styles.tableRowRelegation
+                    index === 0 && styles.tableRowFirst,
+                    index <= 3 && styles.tableRowChampions,
+                    index === group.standings.length - 1 && styles.tableRowLast,
                   ]}
+                  onPress={() => router.push(`/teamCommunity/${standing.team.id}` as any)}
                 >
-                  <Text style={styles.tableRank}>{team.rank}</Text>
-                  <View style={styles.tableTeam}>
-                    {team.team.logo && (
-                      <Image source={{ uri: team.team.logo }} style={styles.tableLogo} resizeMode="contain" />
-                    )}
-                    <Text style={styles.tableTeamName} numberOfLines={1}>{team.team.name}</Text>
+                  <View style={[
+                    styles.positionBadge,
+                    index === 0 && styles.positionBadgeGold,
+                    index === 1 && styles.positionBadgeSilver,
+                    index === 2 && styles.positionBadgeBronze,
+                  ]}>
+                    <Text style={[
+                      styles.positionText,
+                      index <= 2 && styles.positionTextHighlight
+                    ]}>
+                      {standing.rank}
+                    </Text>
                   </View>
-                  <Text style={styles.tableStat}>{team.played}</Text>
-                  <Text style={styles.tableStat}>{team.goalsDiff > 0 ? '+' : ''}{team.goalsDiff}</Text>
-                  <Text style={styles.tablePoints}>{team.points}</Text>
-                </View>
+
+                  <View style={styles.teamColumn}>
+                    <Image 
+                      source={{ uri: standing.team.logo }} 
+                      style={styles.teamLogo}
+                      resizeMode="contain"
+                    />
+                    <Text style={styles.teamName} numberOfLines={1}>
+                      {standing.team.name}
+                    </Text>
+                  </View>
+
+                  <Text style={styles.statText}>{standing.played}</Text>
+                  <Text style={styles.statText}>{standing.win}</Text>
+                  <Text style={styles.statText}>{standing.draw}</Text>
+                  <Text style={styles.statText}>{standing.lose}</Text>
+                  <Text style={[
+                    styles.statText,
+                    standing.goalsDiff > 0 && styles.statTextPositive,
+                    standing.goalsDiff < 0 && styles.statTextNegative,
+                  ]}>
+                    {standing.goalsDiff > 0 ? '+' : ''}{standing.goalsDiff}
+                  </Text>
+                  <Text style={styles.ptsText}>{standing.points}</Text>
+
+                  {/* Form */}
+                  {standing.form && (
+                    <View style={styles.formContainer}>
+                      {standing.form.split('').slice(-5).map((result, i) => (
+                        <View
+                          key={i}
+                          style={[
+                            styles.formDot,
+                            { backgroundColor: getFormColor(result) }
+                          ]}
+                        />
+                      ))}
+                    </View>
+                  )}
+                </TouchableOpacity>
               ))}
             </View>
-            
-            {/* Legend */}
-            <View style={styles.legend}>
+
+            {/* Table Legend */}
+            <View style={styles.tableLegend}>
               <View style={styles.legendItem}>
-                <View style={[styles.legendDot, { backgroundColor: '#34C759' }]} />
+                <View style={[styles.legendDot, { backgroundColor: '#FFD700' }]} />
                 <Text style={styles.legendText}>Champions League</Text>
-              </View>
-              <View style={styles.legendItem}>
-                <View style={[styles.legendDot, { backgroundColor: '#FF9500' }]} />
-                <Text style={styles.legendText}>Europa League</Text>
               </View>
               <View style={styles.legendItem}>
                 <View style={[styles.legendDot, { backgroundColor: '#FF3B30' }]} />
@@ -208,89 +299,44 @@ export default function LeagueCommunityScreen() {
               </View>
             </View>
           </View>
-        )}
-
-        {/* Recent Matches */}
-        {recentMatches.length > 0 && (
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Recent Matches</Text>
-            {recentMatches.map(match => (
-              <View key={match.id} style={styles.matchCard}>
-                <Text style={styles.matchDate}>{formatDate(match.date)}</Text>
-                <View style={styles.matchTeams}>
-                  <View style={styles.matchTeam}>
-                    {match.homeLogo && (
-                      <Image source={{ uri: match.homeLogo }} style={styles.matchLogo} resizeMode="contain" />
-                    )}
-                    <Text style={styles.matchName}>{match.home}</Text>
-                  </View>
-                  <Text style={styles.matchScore}>{match.score}</Text>
-                  <View style={styles.matchTeam}>
-                    {match.awayLogo && (
-                      <Image source={{ uri: match.awayLogo }} style={styles.matchLogo} resizeMode="contain" />
-                    )}
-                    <Text style={styles.matchName}>{match.away}</Text>
-                  </View>
-                </View>
-              </View>
-            ))}
-          </View>
-        )}
+        ))}
 
         {/* Upcoming Matches */}
         {upcomingMatches.length > 0 && (
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>Upcoming Matches</Text>
-            {upcomingMatches.map(match => (
-              <View key={match.id} style={styles.upcomingCard}>
-                <Text style={styles.upcomingDate}>
-                  {new Date(match.date).toLocaleDateString('en-US', { 
-                    month: 'short', 
-                    day: 'numeric',
-                    hour: 'numeric',
-                    minute: '2-digit'
-                  })}
-                </Text>
-                <View style={styles.upcomingTeams}>
-                  <View style={styles.upcomingTeam}>
-                    {match.homeLogo && (
-                      <Image source={{ uri: match.homeLogo }} style={styles.upcomingLogo} resizeMode="contain" />
-                    )}
-                    <Text style={styles.upcomingName}>{match.home}</Text>
-                  </View>
-                  <Text style={styles.upcomingVs}>vs</Text>
-                  <View style={styles.upcomingTeam}>
-                    {match.awayLogo && (
-                      <Image source={{ uri: match.awayLogo }} style={styles.upcomingLogo} resizeMode="contain" />
-                    )}
-                    <Text style={styles.upcomingName}>{match.away}</Text>
-                  </View>
-                </View>
-              </View>
-            ))}
-          </View>
-        )}
-
-        {/* League News */}
-        {news.length > 0 && (
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Latest News</Text>
-            {news.map(article => (
-              <TouchableOpacity 
-                key={article.id} 
-                style={styles.newsCard}
-                onPress={() => router.push(`/article/${article.id}` as any)}
+            
+            {upcomingMatches.map((match) => (
+              <TouchableOpacity
+                key={match.id}
+                style={styles.upcomingMatchCard}
+                onPress={() => router.push(`/matchPreview/${match.id}` as any)}
               >
-                {article.imageUrl && (
-                  <Image source={{ uri: article.imageUrl }} style={styles.newsImage} resizeMode="cover" />
-                )}
-                <View style={styles.newsContent}>
-                  <Text style={styles.newsTitle} numberOfLines={2}>{article.title}</Text>
-                  <Text style={styles.newsDescription} numberOfLines={2}>{article.description}</Text>
-                  <View style={styles.newsMeta}>
-                    <Text style={styles.newsSource}>{article.source}</Text>
-                    <Text style={styles.newsDot}>•</Text>
-                    <Text style={styles.newsDate}>{formatDate(article.publishedAt)}</Text>
+                <Text style={styles.upcomingMatchDate}>{formatUpcomingDate(match.date)}</Text>
+
+                <View style={styles.upcomingMatchTeams}>
+                  <View style={styles.upcomingMatchTeam}>
+                    {match.homeLogo && (
+                      <Image 
+                        source={{ uri: match.homeLogo }} 
+                        style={styles.upcomingMatchLogo}
+                        resizeMode="contain"
+                      />
+                    )}
+                    <Text style={styles.upcomingMatchTeamName}>{match.home}</Text>
+                  </View>
+
+                  <Text style={styles.upcomingVs}>vs</Text>
+
+                  <View style={styles.upcomingMatchTeam}>
+                    {match.awayLogo && (
+                      <Image 
+                        source={{ uri: match.awayLogo }} 
+                        style={styles.upcomingMatchLogo}
+                        resizeMode="contain"
+                      />
+                    )}
+                    <Text style={styles.upcomingMatchTeamName}>{match.away}</Text>
                   </View>
                 </View>
               </TouchableOpacity>
@@ -309,261 +355,321 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#F5F5F7',
   },
-  loadingContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: '#F5F5F7',
-  },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 20,
+    paddingHorizontal: 16,
     paddingTop: 60,
-    paddingBottom: 20,
+    paddingBottom: 16,
     backgroundColor: '#FFF',
   },
   backButton: {
     width: 40,
     height: 40,
+    borderRadius: 20,
+    backgroundColor: '#F5F5F7',
+    alignItems: 'center',
     justifyContent: 'center',
   },
-  headerInfo: {
+  headerLeague: {
     flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
+    justifyContent: 'center',
+    gap: 8,
   },
   headerLogo: {
-    width: 32,
-    height: 32,
+    width: 24,
+    height: 24,
+  },
+  headerLogoPlaceholder: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: '#E8F1FF',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   headerTitle: {
-    fontSize: 20,
+    fontSize: 18,
     fontWeight: '700',
     color: '#000',
   },
-  headerCountry: {
-    fontSize: 14,
-    color: '#666',
-  },
-  followButton: {
+  profileButton: {
     width: 40,
     height: 40,
     borderRadius: 20,
-    backgroundColor: '#0066CC',
-    justifyContent: 'center',
+    backgroundColor: '#E8F1FF',
     alignItems: 'center',
+    justifyContent: 'center',
+  },
+  loadingContainer: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  errorContainer: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  errorText: {
+    fontSize: 16,
+    color: '#666',
   },
   content: {
     flex: 1,
   },
+  leagueCard: {
+    backgroundColor: '#FFF',
+    marginHorizontal: 16,
+    marginTop: 16,
+    borderRadius: 16,
+    padding: 20,
+    ...shadow({ y: 2, blur: 8, opacity: 0.08, elevation: 3 }),
+  },
+  leagueCardHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  leagueLogo: {
+    width: 80,
+    height: 80,
+    marginRight: 16,
+  },
+  leagueDetails: {
+    flex: 1,
+  },
+  leagueName: {
+    fontSize: 24,
+    fontWeight: '800',
+    color: '#000',
+    marginBottom: 4,
+  },
+  leagueCountry: {
+    fontSize: 14,
+    color: '#666',
+    marginBottom: 2,
+  },
+  leagueSeason: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#0066CC',
+  },
+  followButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#0066CC',
+    paddingVertical: 12,
+    borderRadius: 12,
+    gap: 8,
+  },
+  followingButton: {
+    backgroundColor: '#E8F1FF',
+  },
+  followButtonText: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#FFF',
+  },
+  followingButtonText: {
+    color: '#0066CC',
+  },
   section: {
     marginTop: 20,
-    paddingHorizontal: 20,
   },
   sectionTitle: {
     fontSize: 20,
     fontWeight: '700',
     color: '#000',
+    paddingHorizontal: 16,
     marginBottom: 12,
   },
-  
-  // League Table
   tableCard: {
     backgroundColor: '#FFF',
+    marginHorizontal: 16,
     borderRadius: 16,
-    padding: 16,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.08,
-    shadowRadius: 8,
-    elevation: 3,
+    overflow: 'hidden',
+    ...shadow({ y: 2, blur: 8, opacity: 0.08, elevation: 3 }),
   },
   tableHeader: {
     flexDirection: 'row',
-    paddingBottom: 12,
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    backgroundColor: '#F9F9F9',
     borderBottomWidth: 2,
-    borderBottomColor: '#F0F0F0',
-    marginBottom: 8,
+    borderBottomColor: '#E5E5E5',
   },
-  tableHeaderRank: {
-    width: 30,
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#999',
+  tableHeaderPos: {
+    width: 32,
+    fontSize: 11,
+    fontWeight: '800',
+    color: '#8E8E93',
   },
   tableHeaderTeam: {
     flex: 1,
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#999',
+    fontSize: 11,
+    fontWeight: '800',
+    color: '#8E8E93',
   },
   tableHeaderStat: {
-    width: 35,
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#999',
+    width: 28,
+    fontSize: 11,
+    fontWeight: '800',
+    color: '#8E8E93',
     textAlign: 'center',
   },
-  tableHeaderPoints: {
-    width: 40,
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#999',
-    textAlign: 'right',
+  tableHeaderPts: {
+    width: 36,
+    fontSize: 11,
+    fontWeight: '800',
+    color: '#8E8E93',
+    textAlign: 'center',
   },
   tableRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 10,
-    borderLeftWidth: 3,
-    borderLeftColor: 'transparent',
-    paddingLeft: 8,
-    marginLeft: -8,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F0F0F0',
+  },
+  tableRowFirst: {
+    borderTopWidth: 3,
+    borderTopColor: '#FFD700',
   },
   tableRowChampions: {
-    borderLeftColor: '#34C759',
+    backgroundColor: '#FFFBF0',
   },
-  tableRowEuropa: {
-    borderLeftColor: '#FF9500',
+  tableRowLast: {
+    borderBottomWidth: 0,
   },
-  tableRowRelegation: {
-    borderLeftColor: '#FF3B30',
+  positionBadge: {
+    width: 32,
+    height: 28,
+    borderRadius: 6,
+    backgroundColor: '#F5F5F7',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  tableRank: {
-    width: 30,
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#666',
+  positionBadgeGold: {
+    backgroundColor: '#FFD700',
   },
-  tableTeam: {
+  positionBadgeSilver: {
+    backgroundColor: '#C0C0C0',
+  },
+  positionBadgeBronze: {
+    backgroundColor: '#CD7F32',
+  },
+  positionText: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: '#000',
+  },
+  positionTextHighlight: {
+    color: '#FFF',
+  },
+  teamColumn: {
     flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
+    marginLeft: 8,
   },
-  tableLogo: {
-    width: 20,
-    height: 20,
+  teamLogo: {
+    width: 24,
+    height: 24,
     marginRight: 8,
   },
-  tableTeamName: {
-    flex: 1,
-    fontSize: 14,
+  teamName: {
+    fontSize: 13,
     fontWeight: '600',
     color: '#000',
+    flex: 1,
   },
-  tableStat: {
-    width: 35,
-    fontSize: 14,
+  statText: {
+    width: 28,
+    fontSize: 13,
+    fontWeight: '600',
     color: '#666',
     textAlign: 'center',
   },
-  tablePoints: {
-    width: 40,
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#000',
-    textAlign: 'right',
+  statTextPositive: {
+    color: '#34C759',
   },
-  legend: {
+  statTextNegative: {
+    color: '#FF3B30',
+  },
+  ptsText: {
+    width: 36,
+    fontSize: 14,
+    fontWeight: '800',
+    color: '#000',
+    textAlign: 'center',
+  },
+  formContainer: {
     flexDirection: 'row',
-    justifyContent: 'space-around',
-    marginTop: 16,
-    paddingHorizontal: 8,
+    gap: 3,
+    marginLeft: 8,
+  },
+  formDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+  },
+  tableLegend: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    gap: 20,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
   },
   legendItem: {
     flexDirection: 'row',
     alignItems: 'center',
+    gap: 6,
   },
   legendDot: {
     width: 8,
     height: 8,
     borderRadius: 4,
-    marginRight: 6,
   },
   legendText: {
     fontSize: 11,
     color: '#666',
   },
-  
-  // Recent Matches
-  matchCard: {
+  upcomingMatchCard: {
     backgroundColor: '#FFF',
-    borderRadius: 12,
-    padding: 16,
-    marginBottom: 12,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 4,
-    elevation: 2,
-  },
-  matchDate: {
-    fontSize: 12,
-    color: '#666',
-    marginBottom: 12,
-  },
-  matchTeams: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  matchTeam: {
-    flex: 1,
-    alignItems: 'center',
-  },
-  matchLogo: {
-    width: 28,
-    height: 28,
-    marginBottom: 6,
-  },
-  matchName: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#000',
-    textAlign: 'center',
-  },
-  matchScore: {
-    fontSize: 20,
-    fontWeight: '800',
-    color: '#000',
     marginHorizontal: 16,
-  },
-  
-  // Upcoming Matches
-  upcomingCard: {
-    backgroundColor: '#FFF',
+    marginBottom: 12,
     borderRadius: 12,
     padding: 16,
-    marginBottom: 12,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 4,
-    elevation: 2,
+    ...shadow({ y: 1, blur: 4, opacity: 0.05, elevation: 2 }),
   },
-  upcomingDate: {
+  upcomingMatchDate: {
     fontSize: 12,
-    color: '#666',
+    fontWeight: '600',
+    color: '#0066CC',
     marginBottom: 12,
   },
-  upcomingTeams: {
+  upcomingMatchTeams: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
   },
-  upcomingTeam: {
+  upcomingMatchTeam: {
     flex: 1,
     alignItems: 'center',
   },
-  upcomingLogo: {
-    width: 28,
-    height: 28,
+  upcomingMatchLogo: {
+    width: 40,
+    height: 40,
     marginBottom: 6,
   },
-  upcomingName: {
+  upcomingMatchTeamName: {
     fontSize: 13,
     fontWeight: '600',
     color: '#000',
@@ -571,57 +677,8 @@ const styles = StyleSheet.create({
   },
   upcomingVs: {
     fontSize: 12,
-    color: '#999',
-    marginHorizontal: 12,
-  },
-  
-  // News
-  newsCard: {
-    backgroundColor: '#FFF',
-    borderRadius: 12,
-    marginBottom: 12,
-    overflow: 'hidden',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 4,
-    elevation: 2,
-  },
-  newsImage: {
-    width: '100%',
-    height: 180,
-  },
-  newsContent: {
-    padding: 16,
-  },
-  newsTitle: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#000',
-    marginBottom: 6,
-  },
-  newsDescription: {
-    fontSize: 14,
-    color: '#666',
-    lineHeight: 20,
-    marginBottom: 12,
-  },
-  newsMeta: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  newsSource: {
-    fontSize: 12,
     fontWeight: '600',
-    color: '#0066CC',
-  },
-  newsDot: {
-    fontSize: 12,
-    color: '#CCC',
-    marginHorizontal: 6,
-  },
-  newsDate: {
-    fontSize: 12,
-    color: '#999',
+    color: '#8E8E93',
+    paddingHorizontal: 12,
   },
 });

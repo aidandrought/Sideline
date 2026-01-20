@@ -33,60 +33,28 @@ class CommunityService {
     timestamp: number;
   } | null = null;
 
-  private readonly CACHE_DURATION = 10 * 60 * 1000; // 10 minutes
+  private inFlight: Promise<{ teams: Community[]; leagues: Community[] }> | null = null;
+
+  private readonly STALE_TIME = 2 * 60 * 1000; // 2 minutes
+  private readonly CACHE_DURATION = 15 * 60 * 1000; // 15 minutes
 
   /**
    * Generate communities dynamically from live + upcoming matches
    */
   async generateCommunitiesFromMatches(): Promise<{ teams: Community[]; leagues: Community[] }> {
-    // Check cache first
-    if (this.communitiesCache && Date.now() - this.communitiesCache.timestamp < this.CACHE_DURATION) {
+    const cacheSnapshot = this.getCacheSnapshot();
+    if (cacheSnapshot) {
+      if (cacheSnapshot.isStale) {
+        void this.fetchCommunities();
+      }
       console.log('Using cached communities');
       return {
-        teams: this.communitiesCache.teams,
-        leagues: this.communitiesCache.leagues
+        teams: cacheSnapshot.teams,
+        leagues: cacheSnapshot.leagues
       };
     }
 
-    console.log('Generating communities from matches...');
-    
-    try {
-      const { teams, leagues } = await footballAPI.getCommunitiesFromMatches();
-      
-      // Convert to Community interface
-      const teamCommunities: Community[] = teams.map(t => ({
-        id: t.id,
-        type: 'team' as const,
-        name: t.name,
-        logo: t.logo,
-        league: t.leagueName
-      }));
-
-      const leagueCommunities: Community[] = leagues.map(l => ({
-        id: l.id,
-        type: 'league' as const,
-        name: l.name,
-        logo: l.logo || '',
-        country: l.country
-      }));
-
-      // Update cache
-      this.communitiesCache = {
-        teams: teamCommunities,
-        leagues: leagueCommunities,
-        timestamp: Date.now()
-      };
-
-      console.log(`Generated ${teamCommunities.length} team communities and ${leagueCommunities.length} league communities`);
-
-      return {
-        teams: teamCommunities,
-        leagues: leagueCommunities
-      };
-    } catch (error) {
-      console.error('Error generating communities:', error);
-      return { teams: [], leagues: [] };
-    }
+    return await this.fetchCommunities();
   }
 
   /**
@@ -284,7 +252,105 @@ class CommunityService {
    */
   clearCache(): void {
     this.communitiesCache = null;
+    this.inFlight = null;
     console.log('Communities cache cleared');
+  }
+
+  getCachedAllCommunities(): { data: Community[]; isStale: boolean; updatedAt: number } | null {
+    const cacheSnapshot = this.getCacheSnapshot();
+    if (!cacheSnapshot) return null;
+    return {
+      data: [...cacheSnapshot.teams, ...cacheSnapshot.leagues],
+      isStale: cacheSnapshot.isStale,
+      updatedAt: cacheSnapshot.timestamp
+    };
+  }
+
+  async refreshCommunities(): Promise<{ teams: Community[]; leagues: Community[] }> {
+    this.communitiesCache = null;
+    return await this.fetchCommunities();
+  }
+
+  async refreshCommunitiesIfStale(): Promise<{ teams: Community[]; leagues: Community[] } | null> {
+    const cacheSnapshot = this.getCacheSnapshot();
+    if (!cacheSnapshot || cacheSnapshot.isStale) {
+      return await this.fetchCommunities();
+    }
+    return null;
+  }
+
+  prefetchCommunities(): void {
+    const cacheSnapshot = this.getCacheSnapshot();
+    if (!cacheSnapshot || cacheSnapshot.isStale) {
+      void this.fetchCommunities();
+    }
+  }
+
+  private getCacheSnapshot(): { teams: Community[]; leagues: Community[]; timestamp: number; isStale: boolean } | null {
+    if (!this.communitiesCache) return null;
+    const age = Date.now() - this.communitiesCache.timestamp;
+    if (age > this.CACHE_DURATION) {
+      this.communitiesCache = null;
+      return null;
+    }
+    return {
+      teams: this.communitiesCache.teams,
+      leagues: this.communitiesCache.leagues,
+      timestamp: this.communitiesCache.timestamp,
+      isStale: age > this.STALE_TIME
+    };
+  }
+
+  private async fetchCommunities(): Promise<{ teams: Community[]; leagues: Community[] }> {
+    if (this.inFlight) return this.inFlight;
+
+    this.inFlight = (async () => {
+      console.log('Generating communities from matches...');
+
+      try {
+        const { teams, leagues } = await footballAPI.getCommunitiesFromMatches();
+
+        // Convert to Community interface
+        const teamCommunities: Community[] = teams.map(t => ({
+          id: t.id,
+          type: 'team' as const,
+          name: t.name,
+          logo: t.logo,
+          league: t.leagueName
+        }));
+
+        const leagueCommunities: Community[] = leagues.map(l => ({
+          id: l.id,
+          type: 'league' as const,
+          name: l.name,
+          logo: l.logo || '',
+          country: l.country
+        }));
+
+        // Update cache
+        this.communitiesCache = {
+          teams: teamCommunities,
+          leagues: leagueCommunities,
+          timestamp: Date.now()
+        };
+
+        console.log(`Generated ${teamCommunities.length} team communities and ${leagueCommunities.length} league communities`);
+
+        return {
+          teams: teamCommunities,
+          leagues: leagueCommunities
+        };
+      } catch (error) {
+        console.error('Error generating communities:', error);
+        return { teams: [], leagues: [] };
+      }
+    })();
+
+    try {
+      return await this.inFlight;
+    } finally {
+      this.inFlight = null;
+    }
   }
 }
 

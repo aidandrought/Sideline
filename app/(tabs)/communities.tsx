@@ -16,6 +16,7 @@ import {
   TouchableOpacity,
   View
 } from 'react-native';
+import { shadow } from '../../components/styleUtils';
 import { useAuth } from '../../context/AuthContext';
 import { Community, communityService } from '../../services/communityService';
 
@@ -225,6 +226,14 @@ export default function CommunitiesScreen() {
       <View style={styles.container}>
         <View style={styles.header}>
           <Text style={styles.title}>Communities</Text>
+          <View style={styles.headerActions}>
+            <TouchableOpacity onPress={() => setSearchModalVisible(true)}>
+              <Ionicons name="search" size={24} color="#000" />
+            </TouchableOpacity>
+            <TouchableOpacity onPress={() => router.push('/settings' as any)} style={styles.profileButton}>
+              <Ionicons name="person" size={20} color="#0066CC" />
+            </TouchableOpacity>
+          </View>
         </View>
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color="#0066CC" />
@@ -637,9 +646,14 @@ export default function CommunitiesScreen() {
       {/* Header */}
       <View style={styles.header}>
         <Text style={styles.title}>Communities</Text>
-        <TouchableOpacity onPress={() => setSearchModalVisible(true)}>
-          <Ionicons name="search" size={24} color="#000" />
-        </TouchableOpacity>
+        <View style={styles.headerActions}>
+          <TouchableOpacity onPress={() => setSearchModalVisible(true)}>
+            <Ionicons name="search" size={24} color="#000" />
+          </TouchableOpacity>
+          <TouchableOpacity onPress={() => router.push('/settings' as any)} style={styles.profileButton}>
+            <Ionicons name="person" size={20} color="#0066CC" />
+          </TouchableOpacity>
+        </View>
       </View>
 
       <ScrollView
@@ -675,6 +689,19 @@ const styles = StyleSheet.create({
     paddingTop: 70,
     paddingBottom: 20,
     backgroundColor: '#FFF',
+  },
+  headerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  profileButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#E8F1FF',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   title: {
     fontSize: 32,
@@ -782,11 +809,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#FFF',
     borderRadius: 16,
     padding: 16,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.08,
-    shadowRadius: 8,
-    elevation: 3,
+    ...shadow({ y: 2, blur: 8, opacity: 0.08, elevation: 3 }),
   },
   myTeamHeader: {
     alignItems: 'center',
@@ -846,11 +869,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#FFF',
     borderRadius: 12,
     padding: 12,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 4,
-    elevation: 2,
+    ...shadow({ y: 1, blur: 4, opacity: 0.05, elevation: 2 }),
   },
   suggestedLogo: {
     width: 40,
@@ -900,11 +919,7 @@ const styles = StyleSheet.create({
     marginBottom: 8,
     padding: 12,
     borderRadius: 12,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 4,
-    elevation: 2,
+    ...shadow({ y: 1, blur: 4, opacity: 0.05, elevation: 2 }),
   },
   communityListLogo: {
     width: 36,

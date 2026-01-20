@@ -220,14 +220,18 @@ const loadData = async () => {
       kickoffTime: new Date(m.date),
       venue: 'Stadium TBD'
     })) : SAMPLE_UPCOMING);
-    
-    const newsData = await newsAPI.getSoccerNews();
-    setNews(newsData.slice(0, 6));
   } catch (error) {
     console.error('Error loading data:', error);
     // Fallback to sample data on error
     setLiveMatches([TEST_LIVE_MATCH]);
     setUpcomingMatches(SAMPLE_UPCOMING);
+  }
+
+  try {
+    const newsData = await newsAPI.getSoccerNews();
+    setNews(newsData.slice(0, 6));
+  } catch (error) {
+    console.error('Error loading news:', error);
   }
 };
 

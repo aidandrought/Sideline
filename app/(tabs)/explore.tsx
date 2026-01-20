@@ -1,9 +1,9 @@
-// app/(tabs)/explore.tsx
+﻿// app/(tabs)/explore.tsx
 // IMPROVED: League browsing, team directory, better search
 
 import { Ionicons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
-import { useEffect, useState } from 'react';
+import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Image,
@@ -14,13 +14,36 @@ import {
   TouchableOpacity,
   View
 } from 'react-native';
+import { shadow } from '../../components/styleUtils';
 import { Community, communityService } from '../../services/communityService';
 import { footballAPI, Match } from '../../services/footballApi';
-import { newsAPI, NewsArticle } from '../../services/newsApi';
+import { newsAPI, NewsArticle, RateLimitError } from '../../services/newsApi';
 
 export default function ExploreScreen() {
   const router = useRouter();
+  const { mode, q, type, initialTab } = useLocalSearchParams();
   
+  const tabParam = Array.isArray(initialTab) ? initialTab[0] : initialTab;
+  const newsOnlyMode = (Array.isArray(mode) ? mode[0] : mode) === 'news' || (Array.isArray(type) ? type[0] : type) === 'news' || tabParam === 'news';
+  const initialQuery = Array.isArray(q) ? q[0] : q;
+  
+  const deriveExploreData = useCallback((allCommunities: Community[]) => {
+    // Get leagues
+    const leagueList = allCommunities.filter(c => c.type === 'league');
+
+    // Get popular teams (from major leagues)
+    const popularLeagues = ['Premier League', 'La Liga', 'Serie A', 'Bundesliga', 'Ligue 1'];
+    const popularTeamsList = allCommunities.filter(c => 
+      c.type === 'team' && c.league && popularLeagues.includes(c.league)
+    ).slice(0, 12);
+
+    return { leagueList, popularTeamsList };
+  }, []);
+
+  const cached = useMemo(() => communityService.getCachedAllCommunities(), []);
+  const cachedAll = cached?.data ?? [];
+  const cachedExploreData = useMemo(() => deriveExploreData(cachedAll), [cachedAll, deriveExploreData]);
+
   const [searchQuery, setSearchQuery] = useState('');
   const [searching, setSearching] = useState(false);
   const [searchResults, setSearchResults] = useState<{
@@ -29,31 +52,78 @@ export default function ExploreScreen() {
     matches: Match[];
     news: NewsArticle[];
   }>({ teams: [], leagues: [], matches: [], news: [] });
+  const [newsPage, setNewsPage] = useState(1);
+  const [newsHasMore, setNewsHasMore] = useState(true);
+  const [newsLoadingMore, setNewsLoadingMore] = useState(false);
+  const [newsRateLimited, setNewsRateLimited] = useState(false);
+  const searchAbortRef = useRef<AbortController | null>(null);
   
-  const [leagues, setLeagues] = useState<Community[]>([]);
-  const [popularTeams, setPopularTeams] = useState<Community[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [leagues, setLeagues] = useState<Community[]>(cachedExploreData.leagueList);
+  const [popularTeams, setPopularTeams] = useState<Community[]>(cachedExploreData.popularTeamsList);
+  const [loading, setLoading] = useState(cachedAll.length === 0);
 
   useEffect(() => {
     loadExplorePage();
   }, []);
 
+  useEffect(() => {
+    if (initialQuery) {
+      setSearchQuery(initialQuery);
+    }
+  }, [initialQuery]);
+
+  useEffect(() => {
+    const trimmed = searchQuery.trim();
+    if (trimmed.length < 2) {
+      setSearchResults({ teams: [], leagues: [], matches: [], news: [] });
+      setSearching(false);
+      setNewsPage(1);
+      setNewsHasMore(true);
+      setNewsRateLimited(false);
+      if (searchAbortRef.current) {
+        searchAbortRef.current.abort();
+      }
+      return;
+    }
+
+    setSearching(true);
+    setNewsPage(1);
+    setNewsHasMore(true);
+    setNewsRateLimited(false);
+
+    const controller = new AbortController();
+    if (searchAbortRef.current) {
+      searchAbortRef.current.abort();
+    }
+    searchAbortRef.current = controller;
+
+    const timeout = setTimeout(() => {
+      performSearch(trimmed, controller.signal);
+    }, 500);
+
+    return () => {
+      clearTimeout(timeout);
+      controller.abort();
+    };
+  }, [searchQuery]);
+
   const loadExplorePage = async () => {
     try {
-      setLoading(true);
-      const allCommunities = await communityService.getAllCommunities();
-      
-      // Get leagues
-      const leagueList = allCommunities.filter(c => c.type === 'league');
+      const cachedSnapshot = communityService.getCachedAllCommunities();
+      if (cachedSnapshot?.data.length) {
+        const { leagueList, popularTeamsList } = deriveExploreData(cachedSnapshot.data);
+        setLeagues(leagueList);
+        setPopularTeams(popularTeamsList);
+        setLoading(false);
+      } else {
+        setLoading(true);
+      }
+
+      const fresh = await communityService.refreshCommunitiesIfStale();
+      const allCommunities = fresh ? [...fresh.teams, ...fresh.leagues] : await communityService.getAllCommunities();
+      const { leagueList, popularTeamsList } = deriveExploreData(allCommunities);
       setLeagues(leagueList);
-      
-      // Get popular teams (from major leagues)
-      const popularLeagues = ['Premier League', 'La Liga', 'Serie A', 'Bundesliga', 'Ligue 1'];
-      const popularTeamsList = allCommunities.filter(c => 
-        c.type === 'team' && c.league && popularLeagues.includes(c.league)
-      ).slice(0, 12);
       setPopularTeams(popularTeamsList);
-      
     } catch (error) {
       console.error('Error loading explore page:', error);
     } finally {
@@ -61,15 +131,61 @@ export default function ExploreScreen() {
     }
   };
 
-  const handleSearch = async (query: string) => {
-    setSearchQuery(query);
-    
+  const dedupeNewsByUrl = useCallback((articles: NewsArticle[]) => {
+    const seen = new Set<string>();
+    return articles.filter(article => {
+      const key = (article.url || `${article.title}-${article.source}`).toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }, []);
+
+  const loadNewsPage = useCallback(async (query: string, pageToLoad: number, append: boolean, signal?: AbortSignal) => {
+    if (append && (newsLoadingMore || !newsHasMore)) return;
+    if (append) {
+      setNewsLoadingMore(true);
+    }
+
+    try {
+      const response = await newsAPI.searchNewsQuery({ q: query, page: pageToLoad, pageSize: 20, signal });
+      if (response.isStale) {
+        setNewsRateLimited(true);
+      }
+      const valid = response.articles.filter(article => article.title && article.url);
+      const unique = dedupeNewsByUrl(valid);
+      setSearchResults(prev => ({
+        ...prev,
+        news: append ? dedupeNewsByUrl([...prev.news, ...unique]) : unique
+      }));
+      setNewsPage(pageToLoad);
+      const hasMore = response.totalResults ? pageToLoad * 20 < response.totalResults : unique.length === 20;
+      setNewsHasMore(hasMore);
+    } catch (error) {
+      if (error && typeof error === 'object' && 'name' in error && error.name === 'AbortError') {
+        return;
+      }
+      if (error instanceof RateLimitError) {
+        setNewsRateLimited(true);
+        setNewsHasMore(false);
+        return;
+      }
+      console.error('Error loading news results:', error);
+      setNewsHasMore(false);
+    } finally {
+      if (append) {
+        setNewsLoadingMore(false);
+      }
+    }
+  }, [dedupeNewsByUrl, newsHasMore, newsLoadingMore]);
+
+  async function performSearch(query: string, signal?: AbortSignal) {
     if (query.trim().length < 2) {
       setSearchResults({ teams: [], leagues: [], matches: [], news: [] });
+      setNewsPage(1);
+      setNewsHasMore(true);
       return;
     }
-    
-    setSearching(true);
     try {
       // Search teams and leagues
       const communities = await communityService.searchCommunities(query);
@@ -86,23 +202,22 @@ export default function ExploreScreen() {
         m.league.toLowerCase().includes(query.toLowerCase())
       ).slice(0, 5);
       
-      // Search news
-      const newsResults = await newsAPI.searchNews(query);
-      
       setSearchResults({
         teams,
         leagues: leagueResults,
         matches: matchResults,
-        news: newsResults.slice(0, 5)
+        news: []
       });
+
+      await loadNewsPage(query, 1, false, signal);
     } catch (error) {
       console.error('Error searching:', error);
     } finally {
       setSearching(false);
     }
-  };
+  }
 
-  const renderLeagueCard = (league: Community) => (
+  const renderLeagueCard = useCallback((league: Community) => (
     <TouchableOpacity
       key={league.id}
       style={styles.leagueCard}
@@ -120,9 +235,9 @@ export default function ExploreScreen() {
         <Text style={styles.leagueCountry}>{league.country}</Text>
       )}
     </TouchableOpacity>
-  );
+  ), [router]);
 
-  const renderTeamCard = (team: Community) => (
+  const renderTeamCard = useCallback((team: Community) => (
     <TouchableOpacity
       key={team.id}
       style={styles.teamCard}
@@ -143,9 +258,9 @@ export default function ExploreScreen() {
       </View>
       <Ionicons name="chevron-forward" size={20} color="#CCC" />
     </TouchableOpacity>
-  );
+  ), [router]);
 
-  const renderMatchResult = (match: Match) => (
+  const renderMatchResult = useCallback((match: Match) => (
     <TouchableOpacity
       key={match.id}
       style={styles.matchResult}
@@ -165,24 +280,26 @@ export default function ExploreScreen() {
           {match.homeLogo && (
             <Image source={{ uri: match.homeLogo }} style={styles.matchResultLogo} resizeMode="contain" />
           )}
-          <Text style={styles.matchResultTeamName}>{match.home}</Text>
+          <Text style={styles.matchResultTeamName} numberOfLines={1}>{match.home}</Text>
         </View>
-        <Text style={styles.matchResultScore}>{match.score || 'vs'}</Text>
+        <View style={styles.matchResultScoreContainer}>
+          <Text style={styles.matchResultScore}>{match.score || 'VS'}</Text>
+        </View>
         <View style={styles.matchResultTeam}>
           {match.awayLogo && (
             <Image source={{ uri: match.awayLogo }} style={styles.matchResultLogo} resizeMode="contain" />
           )}
-          <Text style={styles.matchResultTeamName}>{match.away}</Text>
+          <Text style={styles.matchResultTeamName} numberOfLines={1}>{match.away}</Text>
         </View>
       </View>
     </TouchableOpacity>
-  );
+  ), [router]);
 
-  const renderNewsResult = (article: NewsArticle) => (
+  const renderNewsResult = useCallback((article: NewsArticle) => (
     <TouchableOpacity
       key={article.id}
       style={styles.newsResult}
-      onPress={() => router.push(`/newsDetail/${article.id}` as any)}
+      onPress={() => router.push({ pathname: '/news/reader', params: { url: article.url, title: article.title, source: article.source, author: article.author || '', publishedAt: article.publishedAt, imageUrl: article.imageUrl || '' } } as any)}
     >
       {article.imageUrl && (
         <Image source={{ uri: article.imageUrl }} style={styles.newsResultImage} resizeMode="cover" />
@@ -192,16 +309,32 @@ export default function ExploreScreen() {
         <Text style={styles.newsResultMeta}>{article.source}</Text>
       </View>
     </TouchableOpacity>
-  );
+  ), [router]);
 
-  if (loading) {
+  const showSkeleton = loading && leagues.length === 0 && popularTeams.length === 0;
+
+  if (showSkeleton) {
     return (
       <View style={styles.container}>
         <View style={styles.header}>
           <Text style={styles.title}>Explore</Text>
         </View>
-        <View style={styles.loadingContainer}>
-          <ActivityIndicator size="large" color="#0066CC" />
+        <View style={styles.skeletonContainer}>
+          <View style={styles.skeletonSearch} />
+          <View style={styles.skeletonSection}>
+            <View style={styles.skeletonTitle} />
+            <View style={styles.skeletonRow}>
+              {Array.from({ length: 4 }).map((_, index) => (
+                <View key={`league-skeleton-${index}`} style={styles.skeletonLeagueCard} />
+              ))}
+            </View>
+          </View>
+          <View style={styles.skeletonSection}>
+            <View style={styles.skeletonTitle} />
+            {Array.from({ length: 5 }).map((_, index) => (
+              <View key={`team-skeleton-${index}`} style={styles.skeletonTeamCard} />
+            ))}
+          </View>
         </View>
       </View>
     );
@@ -212,6 +345,9 @@ export default function ExploreScreen() {
       {/* Header */}
       <View style={styles.header}>
         <Text style={styles.title}>Explore</Text>
+        <TouchableOpacity onPress={() => router.push('/settings' as any)} style={styles.profileButton}>
+          <Ionicons name="person" size={20} color="#0066CC" />
+        </TouchableOpacity>
       </View>
 
       {/* Search Bar */}
@@ -222,10 +358,10 @@ export default function ExploreScreen() {
           placeholder="Search teams, leagues, matches..."
           placeholderTextColor="#999"
           value={searchQuery}
-          onChangeText={handleSearch}
+          onChangeText={setSearchQuery}
         />
         {searchQuery.length > 0 && (
-          <TouchableOpacity onPress={() => handleSearch('')}>
+          <TouchableOpacity onPress={() => setSearchQuery('')}>
             <Ionicons name="close-circle" size={20} color="#999" />
           </TouchableOpacity>
         )}
@@ -241,7 +377,7 @@ export default function ExploreScreen() {
           // Search Results
           <View style={styles.searchResults}>
             {/* Teams Results */}
-            {searchResults.teams.length > 0 && (
+            {!newsOnlyMode && searchResults.teams.length > 0 && (
               <View style={styles.resultSection}>
                 <Text style={styles.resultSectionTitle}>Teams ({searchResults.teams.length})</Text>
                 {searchResults.teams.map(renderTeamCard)}
@@ -249,7 +385,7 @@ export default function ExploreScreen() {
             )}
 
             {/* Leagues Results */}
-            {searchResults.leagues.length > 0 && (
+            {!newsOnlyMode && searchResults.leagues.length > 0 && (
               <View style={styles.resultSection}>
                 <Text style={styles.resultSectionTitle}>Leagues ({searchResults.leagues.length})</Text>
                 {searchResults.leagues.map(league => renderTeamCard(league))}
@@ -257,7 +393,7 @@ export default function ExploreScreen() {
             )}
 
             {/* Matches Results */}
-            {searchResults.matches.length > 0 && (
+            {!newsOnlyMode && searchResults.matches.length > 0 && (
               <View style={styles.resultSection}>
                 <Text style={styles.resultSectionTitle}>Matches ({searchResults.matches.length})</Text>
                 {searchResults.matches.map(renderMatchResult)}
@@ -269,7 +405,28 @@ export default function ExploreScreen() {
               <View style={styles.resultSection}>
                 <Text style={styles.resultSectionTitle}>News ({searchResults.news.length})</Text>
                 {searchResults.news.map(renderNewsResult)}
+                {newsRateLimited && (
+                  <Text style={styles.rateLimitText}>News is temporarily rate-limited. Try again shortly.</Text>
+                )}
+                {newsLoadingMore && (
+                  <View style={styles.loadMoreRow}>
+                    <ActivityIndicator size="small" color="#0066CC" />
+                    <Text style={styles.loadMoreText}>Loading more news...</Text>
+                  </View>
+                )}
+                {!newsLoadingMore && newsHasMore && !newsRateLimited && (
+                  <TouchableOpacity
+                    style={styles.loadMoreButton}
+                    onPress={() => loadNewsPage(searchQuery, newsPage + 1, true)}
+                  >
+                    <Text style={styles.loadMoreButtonText}>Load more news</Text>
+                  </TouchableOpacity>
+                )}
               </View>
+            )}
+
+            {newsRateLimited && searchResults.news.length === 0 && (
+              <Text style={styles.rateLimitText}>News is temporarily rate-limited. Try again shortly.</Text>
             )}
 
             {/* No Results */}
@@ -363,10 +520,21 @@ const styles = StyleSheet.create({
     backgroundColor: '#F5F5F7',
   },
   header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
     paddingHorizontal: 20,
     paddingTop: 70,
     paddingBottom: 16,
     backgroundColor: '#FFF',
+  },
+  profileButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#E8F1FF',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   title: {
     fontSize: 32,
@@ -398,6 +566,42 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
+  skeletonContainer: {
+    paddingHorizontal: 20,
+    paddingTop: 16,
+  },
+  skeletonSearch: {
+    height: 48,
+    borderRadius: 12,
+    backgroundColor: '#E6E6E9',
+    marginBottom: 20,
+  },
+  skeletonSection: {
+    marginBottom: 24,
+  },
+  skeletonTitle: {
+    height: 20,
+    width: 160,
+    borderRadius: 10,
+    backgroundColor: '#E6E6E9',
+    marginBottom: 16,
+  },
+  skeletonRow: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  skeletonLeagueCard: {
+    width: 120,
+    height: 140,
+    borderRadius: 16,
+    backgroundColor: '#E6E6E9',
+  },
+  skeletonTeamCard: {
+    height: 64,
+    borderRadius: 12,
+    backgroundColor: '#E6E6E9',
+    marginBottom: 10,
+  },
   searchingContainer: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -425,11 +629,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#FFF',
     borderRadius: 16,
     padding: 20,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.08,
-    shadowRadius: 8,
-    elevation: 3,
+    ...shadow({ y: 2, blur: 8, opacity: 0.08, elevation: 3 }),
   },
   quickActionIcon: {
     width: 56,
@@ -475,11 +675,7 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     padding: 16,
     alignItems: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.08,
-    shadowRadius: 8,
-    elevation: 3,
+    ...shadow({ y: 2, blur: 8, opacity: 0.08, elevation: 3 }),
   },
   leagueLogo: {
     width: 48,
@@ -517,11 +713,7 @@ const styles = StyleSheet.create({
     padding: 12,
     marginHorizontal: 20,
     marginBottom: 8,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 4,
-    elevation: 2,
+    ...shadow({ y: 1, blur: 4, opacity: 0.05, elevation: 2 }),
   },
   teamLogo: {
     width: 40,
@@ -565,19 +757,48 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     marginBottom: 12,
   },
+  loadMoreButton: {
+    marginHorizontal: 20,
+    marginTop: 8,
+    paddingVertical: 10,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#E0E0E0',
+    alignItems: 'center',
+    backgroundColor: '#FFF',
+  },
+  loadMoreButtonText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#0066CC',
+  },
+  loadMoreRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+  },
+  loadMoreText: {
+    fontSize: 13,
+    color: '#666',
+  },
+  rateLimitText: {
+    fontSize: 13,
+    color: '#999',
+    paddingHorizontal: 20,
+    paddingTop: 6,
+  },
   
   // Match Results
   matchResult: {
     backgroundColor: '#FFF',
     borderRadius: 12,
-    padding: 16,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
     marginHorizontal: 20,
     marginBottom: 8,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 4,
-    elevation: 2,
+    ...shadow({ y: 1, blur: 4, opacity: 0.05, elevation: 2 }),
   },
   matchResultHeader: {
     flexDirection: 'row',
@@ -617,25 +838,30 @@ const styles = StyleSheet.create({
   },
   matchResultTeam: {
     flex: 1,
-    flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
   },
   matchResultLogo: {
-    width: 24,
-    height: 24,
-    marginRight: 8,
+    width: 28,
+    height: 28,
   },
   matchResultTeamName: {
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '600',
     color: '#000',
-    flex: 1,
+    textAlign: 'center',
+  },
+  matchResultScoreContainer: {
+    width: 48,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   matchResultScore: {
-    fontSize: 18,
+    fontSize: 12,
     fontWeight: '800',
     color: '#000',
-    marginHorizontal: 12,
+    letterSpacing: 1,
   },
   
   // News Results
@@ -646,11 +872,7 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     marginHorizontal: 20,
     marginBottom: 8,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 4,
-    elevation: 2,
+    ...shadow({ y: 1, blur: 4, opacity: 0.05, elevation: 2 }),
   },
   newsResultImage: {
     width: 100,
@@ -684,3 +906,5 @@ const styles = StyleSheet.create({
     marginTop: 16,
   },
 });
+
+

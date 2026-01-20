@@ -33,7 +33,8 @@ export default function NewsDetailScreen() {
   const loadArticle = async () => {
     try {
       const articleId = Array.isArray(id) ? id[0] : id;
-      const found = await newsAPI.getArticleById(decodeURIComponent(articleId));
+      const decodedId = typeof articleId === 'string' ? decodeURIComponent(articleId) : '';
+      const found = decodedId ? await newsAPI.getArticleById(decodedId) : null;
       setArticle(found);
     } catch (error) {
       console.error('Error loading article:', error);

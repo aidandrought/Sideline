@@ -12,11 +12,11 @@ import { presenceService } from '../../services/presenceService';
 
 const AVAILABLE_EMOJIS = ['❤️', '😂', '🔥', '👍', '⚽', '🎉', '💪'];
 
-type ChatRoomType = 'team' | 'league' | 'community';
-
 export default function CommunityChatScreen() {
   const router = useRouter();
   const { id, name, type } = useLocalSearchParams();
+  const rawType = Array.isArray(type) ? type[0] : type;
+  const resolvedType: 'team' | 'league' = rawType === 'league' ? 'league' : 'team';
   const { userProfile } = useAuth();
   const scrollViewRef = useRef<ScrollView>(null);
 
@@ -28,8 +28,10 @@ export default function CommunityChatScreen() {
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [selectedMessage, setSelectedMessage] = useState<ChatMessage | null>(null);
 
+  const communityIconName = (community?.type ?? resolvedType) === 'league' ? 'trophy' : 'shield';
+
   useEffect(() => {
-    loadCommunity();
+    void loadCommunity();
     
     // Subscribe to chat
     const unsubscribeChat = chatService.subscribeToChat(
@@ -60,33 +62,32 @@ export default function CommunityChatScreen() {
     scrollViewRef.current?.scrollToEnd({ animated: true });
   }, [messages]);
 
-  const loadCommunity = () => {
-    const comm = communityService.getCommunityById(id as string);
+  const loadCommunity = async () => {
+    const idValue = Array.isArray(id) ? id[0] : id;
+    const numericId = Number(idValue);
+    const resolvedId = Number.isFinite(numericId) ? numericId : 0;
+
+    const comm = Number.isFinite(numericId)
+      ? await communityService.getCommunityById(resolvedId, resolvedType)
+      : undefined;
+
     if (comm) {
       setCommunity(comm);
-    } else {
-      // Create a basic community object from params
-      setCommunity({
-        id: id as string,
-        name: name as string || 'Community',
-        description: '',
-        icon: '💬',
-        color: '#0066CC',
-        type: (type === 'league' ? 'league' : 'team'),
-        members: '0',
-        activeNow: '0',
-        trending: false
-      });
+      return;
     }
+
+    setCommunity({
+      id: resolvedId,
+      name: (Array.isArray(name) ? name[0] : name) || 'Community',
+      logo: '',
+      type: resolvedType
+    });
   };
 
   const handleSend = async () => {
     if (!message.trim() || !userProfile) return;
 
     try {
-      const chatType = community?.type === 'team' ? 'team' : 
-                       community?.type === 'league' ? 'league' : 'community';
-      
       await chatService.sendMessage(
       id as string,
       userProfile.uid,
@@ -121,10 +122,6 @@ export default function CommunityChatScreen() {
 
   const addReaction = async (emoji: string) => {
     if (!selectedMessage) return;
-    
-    const chatType = community?.type === 'team' ? 'team' : 
-                     community?.type === 'league' ? 'league' : 'community';
-    
     await chatService.toggleReaction(
   id as string,
   selectedMessage.id,
@@ -228,7 +225,7 @@ export default function CommunityChatScreen() {
         
         <View style={styles.headerInfo}>
           <View style={styles.headerTitle}>
-            <Text style={styles.communityIcon}>{community?.icon}</Text>
+            <Ionicons name={communityIconName} size={20} color="#FFF" style={styles.communityIcon} />
             <Text style={styles.communityName} numberOfLines={1}>
               {community?.name || name}
             </Text>
@@ -236,7 +233,6 @@ export default function CommunityChatScreen() {
           <View style={styles.headerStats}>
             <View style={styles.activeDot} />
             <Text style={styles.activeCount}>{activeUsers} online</Text>
-            <Text style={styles.memberCount}>• {community?.members} members</Text>
           </View>
         </View>
 
@@ -254,7 +250,7 @@ export default function CommunityChatScreen() {
       >
         {messages.length === 0 ? (
           <View style={styles.emptyChat}>
-            <Text style={styles.emptyChatIcon}>{community?.icon || '💬'}</Text>
+            <Ionicons name={communityIconName} size={48} color="#8E8E93" style={styles.emptyChatIcon} />
             <Text style={styles.emptyChatTitle}>Welcome to {community?.name}!</Text>
             <Text style={styles.emptyChatSubtitle}>
               Be the first to start the conversation

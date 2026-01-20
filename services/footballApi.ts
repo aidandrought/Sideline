@@ -75,6 +75,17 @@ export interface LeagueStanding {
   goalsAgainst: number;
 }
 
+export interface LeagueStandingGroup {
+  name: string;
+  standings: LeagueStanding[];
+}
+
+export interface LeagueStandingsResponse {
+  leagueId: number;
+  season: number | null;
+  groups: LeagueStandingGroup[];
+}
+
 export interface FinishedMatch {
   id: number;
   home: string;
@@ -84,11 +95,21 @@ export interface FinishedMatch {
   date: string;
   homeLogo?: string;
   awayLogo?: string;
+  leagueId?: number;
+}
+
+export interface LiveFixtureResponse {
+  fixture: any | null;
+  events: any[];
+  statistics: any[];
+  lineups: any[];
 }
 
 class FootballAPI {
   private baseURL = 'https://v3.football.api-sports.io';
   private apiKey = '7ee562287b3c02ee8426736fd81d032a';
+  private readonly currentSeasonCache = new Map<number, { season: number; expiresAt: number }>();
+  private readonly currentSeasonTtlMs = 12 * 60 * 60 * 1000;
 
   // EXACT league names from API (must match exactly)
   private allowedLeagueIds = [
@@ -390,6 +411,90 @@ class FootballAPI {
     return [];
   }
 
+  private async getCurrentSeasonForLeague(leagueId: number): Promise<number> {
+    const cached = this.currentSeasonCache.get(leagueId);
+    if (cached && cached.expiresAt > Date.now()) {
+      return cached.season;
+    }
+
+    try {
+      const data = await this.fetch(`/leagues?id=${leagueId}`);
+      const seasons = data?.response?.[0]?.seasons;
+      const currentSeason = seasons?.find((season: any) => season.current === true)?.year;
+      const resolvedSeason = typeof currentSeason === 'number' ? currentSeason : new Date().getFullYear();
+      this.currentSeasonCache.set(leagueId, {
+        season: resolvedSeason,
+        expiresAt: Date.now() + this.currentSeasonTtlMs
+      });
+      return resolvedSeason;
+    } catch (error) {
+      console.error('Error fetching current season:', error);
+    }
+
+    return new Date().getFullYear();
+  }
+
+  async getLeagueStandingsByCurrentSeason(leagueId: number): Promise<LeagueStandingsResponse> {
+    try {
+      const season = await this.getCurrentSeasonForLeague(leagueId);
+      const data = await this.fetch(`/standings?league=${leagueId}&season=${season}`);
+
+      const rawStandings = data?.response?.[0]?.league?.standings;
+      if (!rawStandings) {
+        return { leagueId, season, groups: [] };
+      }
+
+      const groups: LeagueStandingGroup[] = rawStandings.map((group: any[]) => {
+        const name = group?.[0]?.group || data?.response?.[0]?.league?.name || 'Standings';
+        const standings = group.map((s: any) => ({
+          rank: s.rank,
+          team: {
+            id: s.team.id,
+            name: s.team.name,
+            logo: s.team.logo
+          },
+          points: s.points,
+          goalsDiff: s.goalsDiff,
+          form: s.form,
+          played: s.all.played,
+          win: s.all.win,
+          draw: s.all.draw,
+          lose: s.all.lose,
+          goalsFor: s.all.goals.for,
+          goalsAgainst: s.all.goals.against
+        }));
+
+        return { name, standings };
+      });
+
+      return { leagueId, season, groups };
+    } catch (error) {
+      console.error('Error fetching league standings:', error);
+      return { leagueId, season: null, groups: [] };
+    }
+  }
+
+  async getFixtureLive(fixtureId: number): Promise<LiveFixtureResponse> {
+    try {
+      const [fixtureData, eventsData, statsData, lineupsData] = await Promise.all([
+        this.fetch(`/fixtures?id=${fixtureId}`),
+        this.fetch(`/fixtures/events?fixture=${fixtureId}`),
+        this.fetch(`/fixtures/statistics?fixture=${fixtureId}`),
+        this.fetch(`/fixtures/lineups?fixture=${fixtureId}`),
+      ]);
+
+      return {
+        fixture: fixtureData?.response?.[0] ?? null,
+        events: eventsData?.response ?? [],
+        statistics: statsData?.response ?? [],
+        lineups: lineupsData?.response ?? [],
+      };
+    } catch (error) {
+      console.error('Error fetching live fixture:', error);
+      return { fixture: null, events: [], statistics: [], lineups: [] };
+    }
+  }
+
   /**
    * NEW: Get team's last match result
    */
@@ -406,6 +511,7 @@ class FootballAPI {
           away: fixture.teams.away.name,
           score: `${fixture.goals.home}-${fixture.goals.away}`,
           league: fixture.league.name,
+          leagueId: fixture.league.id,
           date: fixture.fixture.date,
           homeLogo: fixture.teams.home.logo,
           awayLogo: fixture.teams.away.logo

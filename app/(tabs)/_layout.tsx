@@ -1,10 +1,12 @@
 import { Ionicons } from '@expo/vector-icons';
 import { Tabs } from 'expo-router';
+import { communityService } from '../../services/communityService';
 
 export default function TabLayout() {
   return (
     <Tabs
       screenOptions={{
+        unmountOnBlur: false,
         tabBarActiveTintColor: '#0066CC',
         tabBarInactiveTintColor: '#89898bff',
         tabBarStyle: {
@@ -47,6 +49,9 @@ export default function TabLayout() {
             />
           ),
         }}
+        listeners={{
+          tabPress: () => communityService.prefetchCommunities(),
+        }}
       />
       <Tabs.Screen
         name="communities"
@@ -59,6 +64,9 @@ export default function TabLayout() {
               color={color} 
             />
           ),
+        }}
+        listeners={{
+          tabPress: () => communityService.prefetchCommunities(),
         }}
       />
     </Tabs>

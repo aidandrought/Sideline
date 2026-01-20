@@ -97,6 +97,15 @@ export default function RootLayout() {
           }}
         />
 
+        {/* Article Reader */}
+        <Stack.Screen
+          name="news/reader"
+          options={{
+            presentation: 'card',
+            animation: 'slide_from_right'
+          }}
+        />
+
         {/* Welcome/Onboarding Screen */}
         <Stack.Screen 
           name="welcome" 
