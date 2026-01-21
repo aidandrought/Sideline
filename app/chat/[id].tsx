@@ -1,9 +1,9 @@
 ﻿// app/chat/[id].tsx
 // FINAL VERSION: Real Firebase Chat + Pitch Visualization + 3 Tabs
-// âœ… Each match has isolated chat room
-// âœ… Real-time Firebase chat with reactions
-// âœ… Pitch visualization with player positions
-// âœ… Horizontal substitutes list
+// Each match has isolated chat room
+// Real-time Firebase chat with reactions
+// Pitch visualization with player positions
+// Horizontal substitutes list
 
 import { Ionicons } from '@expo/vector-icons';
 import { router, useLocalSearchParams } from 'expo-router';
@@ -61,6 +61,7 @@ interface Stats {
 
 type PlayByPlayEventType =
   | 'GOAL'
+  | 'PENALTY'
   | 'YELLOW_CARD'
   | 'RED_CARD'
   | 'SUBSTITUTION'
@@ -102,6 +103,7 @@ interface PlayByPlayEvent {
   type: PlayByPlayEventType;
   title: string;
   description: string;
+  icon: string;
   details: PlayByPlayDetails;
 }
 
@@ -112,6 +114,7 @@ interface Lineup {
     name: string;
     position: string;
     row: number;
+    col: number;
   }>;
   substitutes: Array<{
     number: number;
@@ -126,6 +129,73 @@ const TEAM_COLORS = {
   neutral: '#8E8E93',
 };
 
+const MARKER_SIZE = 40;
+const MARKER_HALF = MARKER_SIZE / 2;
+
+const normalizeName = (name?: string) => (name || '').trim().toLowerCase();
+const nameKey = (name?: string) => {
+  const n = normalizeName(name);
+  if (!n) return '';
+  const parts = n.split(' ').filter(Boolean);
+  return parts[parts.length - 1] || '';
+};
+
+const getRowLeftPercents = (count: number) => {
+  if (count <= 0) return [];
+  if (count === 1) return [50];
+  const presets: Record<number, number[]> = {
+    2: [35, 65],
+    3: [25, 50, 75],
+    4: [20, 40, 60, 80],
+    5: [15, 32.5, 50, 67.5, 85],
+  };
+  if (presets[count]) return presets[count];
+
+  const min = 12;
+  const max = 88;
+  const step = (max - min) / (count - 1);
+  return Array.from({ length: count }, (_, i) => min + i * step);
+};
+
+const getEventMinuteValue = (event: any) => {
+  const elapsed = event?.time?.elapsed || 0;
+  const extra = event?.time?.extra || 0;
+  return elapsed + extra / 100;
+};
+
+const applySubstitutions = (
+  lineup: Lineup,
+  events: any[],
+  teamId: number,
+  currentMinute: number
+) => {
+  const players = lineup.players.map(player => ({ ...player }));
+  const subEvents = events
+    .filter(event => {
+      const isSub =
+        event?.type?.toLowerCase() === 'subst' ||
+        event?.detail?.toLowerCase()?.includes('substitution');
+      return isSub && event?.team?.id === teamId;
+    })
+    .sort((a, b) => getEventMinuteValue(a) - getEventMinuteValue(b));
+
+  subEvents.forEach(event => {
+    if ((event?.time?.elapsed || 0) > currentMinute) return;
+    const offName = event?.player?.name;
+    const onName = event?.assist?.name;
+    if (!offName || !onName) return;
+    const offKey = normalizeName(offName);
+    const index = players.findIndex(player => normalizeName(player.name) === offKey);
+    if (index === -1) return;
+    const outgoing = players[index];
+    players[index] = {
+      ...outgoing,
+      name: onName,
+    };
+  });
+
+  return { ...lineup, players };
+};
 
 const getTeamAbbreviation = (teamName?: string) => {
   if (!teamName) return 'TBD';
@@ -145,9 +215,10 @@ const getTeamName = (team: PlayByPlayEvent['team'], matchData: MatchData | null)
   return team === 'home' ? matchData.home : matchData.away;
 };
 
-const getEventTitle = (type: PlayByPlayEventType) => {
+  const getEventTitle = (type: PlayByPlayEventType) => {
   const titles: Record<PlayByPlayEventType, string> = {
     GOAL: 'Goal',
+    PENALTY: 'Penalty',
     YELLOW_CARD: 'Yellow Card',
     RED_CARD: 'Red Card',
     SUBSTITUTION: 'Substitution',
@@ -171,12 +242,20 @@ const getEventTitle = (type: PlayByPlayEventType) => {
 const formatEventDescription = (event: PlayByPlayEvent, matchData: MatchData | null) => {
   const teamName = getTeamName(event.team, matchData);
   const details = event.details;
+  const scoreline =
+    details.score_home !== undefined && details.score_away !== undefined
+      ? ` Score now ${details.score_home}-${details.score_away}.`
+      : '';
 
   switch (event.type) {
     case 'GOAL': {
       const scorer = details.scorer || 'Unknown scorer';
       const assist = details.assist ? ` Assisted by ${details.assist}.` : '';
-      return `Goal! ${scorer} scores for ${teamName}.${assist}`;
+      return `Goal! ${scorer} scores for ${teamName}.${assist}${scoreline}`;
+    }
+    case 'PENALTY': {
+      const scorer = details.scorer || 'Penalty taker';
+      return `Penalty for ${teamName}. ${scorer} steps up.${scoreline}`;
     }
     case 'SUBSTITUTION': {
       const on = details.playerOn || 'Player';
@@ -187,11 +266,15 @@ const formatEventDescription = (event: PlayByPlayEvent, matchData: MatchData | n
       return `Corner, ${teamName}.`;
     case 'SHOT_ON_TARGET': {
       const shooter = details.shooter || 'Shot';
-      return `Shot on target by ${shooter} (${teamName})`;
+      return `Shot on target by ${shooter} (${teamName}).`;
     }
     case 'SHOT_OFF_TARGET': {
       const shooter = details.shooter || 'Shot';
-      return `Shot off target by ${shooter} (${teamName})`;
+      return `Shot off target by ${shooter} (${teamName}).`;
+    }
+    case 'SHOT': {
+      const shooter = details.shooter || 'Shot';
+      return `Shot by ${shooter} (${teamName}).`;
     }
     case 'SAVE': {
       const keeper = details.goalkeeper || 'Goalkeeper';
@@ -227,7 +310,7 @@ const formatEventDescription = (event: PlayByPlayEvent, matchData: MatchData | n
 };
 
 const buildPlayByPlayEvents = (rawEvents: any[], matchData: MatchData): PlayByPlayEvent[] => {
-  console.log('ðŸ“Š Building play-by-play from', rawEvents.length, 'raw events');
+  console.log('Building play-by-play from', rawEvents.length, 'raw events');
   
   const sorted = [...rawEvents].sort((a, b) => {
     const minuteDiff = (a.time?.elapsed || 0) - (b.time?.elapsed || 0);
@@ -254,6 +337,7 @@ const buildPlayByPlayEvents = (rawEvents: any[], matchData: MatchData): PlayByPl
       
       // Goals
       if (type === 'goal') return 'GOAL';
+      if (detail.includes('penalty') || type.includes('penalty')) return 'PENALTY';
       
       // Cards
       if (type === 'card') {
@@ -287,24 +371,26 @@ const buildPlayByPlayEvents = (rawEvents: any[], matchData: MatchData): PlayByPl
       if (detail.includes('full-time') || detail.includes('fulltime')) return 'FT';
       
       // Default to SHOT for unclassified events
-      console.log('âš ï¸ Unclassified event:', type, detail, comments);
+      console.log('Unclassified event:', type, detail, comments);
       return 'SHOT';
     })();
 
     const details: PlayByPlayDetails = {
       player: event.player?.name,
       reason: event.detail,
-      playerOn: event.type === 'subst' ? event.player?.name : undefined,
-      playerOff: event.type === 'subst' ? event.assist?.name : undefined,
-      scorer: event.type === 'Goal' ? event.player?.name : undefined,
-      assist: event.type === 'Goal' ? event.assist?.name : undefined,
+      playerOff: normalizedType === 'SUBSTITUTION' ? event.player?.name : undefined,
+      playerOn: normalizedType === 'SUBSTITUTION' ? event.assist?.name : undefined,
+      scorer: event.type === 'Goal' || normalizedType === 'GOAL' || normalizedType === 'PENALTY'
+        ? event.player?.name
+        : undefined,
+      assist: event.type === 'Goal' || normalizedType === 'GOAL' ? event.assist?.name : undefined,
       shooter: normalizedType.includes('SHOT') ? event.player?.name : undefined,
       goalkeeper: normalizedType === 'SAVE' ? event.player?.name : undefined,
       playerFouled: normalizedType === 'FOUL' ? event.assist?.name : undefined,
       varDecision: event.type === 'Var' ? event.detail : undefined,
     };
 
-    if (normalizedType === 'GOAL') {
+    if (normalizedType === 'GOAL' || normalizedType === 'PENALTY') {
       const scoringTeam = team;
       if (scoringTeam === 'home') homeScore += 1;
       if (scoringTeam === 'away') awayScore += 1;
@@ -321,12 +407,29 @@ const buildPlayByPlayEvents = (rawEvents: any[], matchData: MatchData): PlayByPl
       type: normalizedType,
       title: getEventTitle(normalizedType),
       description: '',
+      icon: (() => {
+        switch (normalizedType) {
+          case 'GOAL': return 'football';
+          case 'PENALTY': return 'alert-circle';
+          case 'YELLOW_CARD': return 'warning';
+          case 'RED_CARD': return 'close-circle';
+          case 'SUBSTITUTION': return 'swap-horizontal';
+          case 'CORNER': return 'flag';
+          case 'SHOT_ON_TARGET': return 'flash';
+          case 'SHOT_OFF_TARGET': return 'arrow-forward-circle';
+          case 'SAVE': return 'hand-left';
+          case 'OFFSIDE': return 'walk';
+          case 'FOUL': return 'alert-circle';
+          case 'VAR': return 'search';
+          default: return 'radio-button-on';
+        }
+      })(),
       details,
     };
 
     playByPlayEvent.description = formatEventDescription(playByPlayEvent, matchData);
     
-    console.log(`âœ… Event ${index + 1}:`, playByPlayEvent.minute + "'", normalizedType, playByPlayEvent.description);
+    console.log('Event ' + (index + 1) + ':', playByPlayEvent.minute, normalizedType, playByPlayEvent.description);
     
     return playByPlayEvent;
   });
@@ -339,27 +442,12 @@ const PlayByPlayRow = ({ event, matchData }: { event: PlayByPlayEvent; matchData
   const teamColor = event.team ? TEAM_COLORS[event.team] : TEAM_COLORS.neutral;
   const isGoal = event.type === 'GOAL';
 
-  const iconName = (() => {
-    switch (event.type) {
-      case 'GOAL': return 'football';
-      case 'YELLOW_CARD': return 'warning';
-      case 'RED_CARD': return 'close-circle';
-      case 'SUBSTITUTION': return 'swap-horizontal';
-      case 'CORNER': return 'flag';
-      case 'SHOT_ON_TARGET': return 'flash';
-      case 'SHOT_OFF_TARGET': return 'arrow-forward-circle';
-      case 'SAVE': return 'hand-left';
-      case 'OFFSIDE': return 'walk';
-      case 'FOUL': return 'alert-circle';
-      case 'VAR': return 'search';
-      default: return 'radio-button-on';
-    }
-  })();
+  const iconName = event.icon || 'radio-button-on';
 
   return (
     <View style={[styles.playByPlayRow, isGoal && styles.goalRow]}>
       <View style={styles.minuteBadge}>
-        <Text style={styles.minuteText}>{minuteLabel}</Text>
+        <Text style={styles.playByPlayMinuteText}>{minuteLabel}</Text>
       </View>
       <View style={[styles.eventIcon, { borderColor: teamColor }]}>
         <Ionicons name={iconName as any} size={16} color={teamColor} />
@@ -399,6 +487,7 @@ export default function LiveMatchChat() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [lastUpdatedAt, setLastUpdatedAt] = useState<number | null>(null);
+  const [rawEvents, setRawEvents] = useState<any[]>([]);
   
   // REAL FIREBASE CHAT STATE
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -447,20 +536,23 @@ export default function LiveMatchChat() {
       return { home: null, away: null };
     }
 
-    const transformLineup = (teamData: any): Lineup => {
-      const mapGridToRow = (grid: string): number => {
-        const [rowStr] = grid.split(':');
-        return parseInt(rowStr) - 1;
-      };
+      const transformLineup = (teamData: any): Lineup => {
+        const mapGridToRowCol = (grid: string) => {
+          const [rowStr, colStr] = grid.split(':');
+          return {
+            row: Math.max(0, parseInt(rowStr, 10) - 1),
+            col: Math.max(0, parseInt(colStr, 10) - 1),
+          };
+        };
 
       return {
         formation: teamData.formation,
-        players: teamData.startXI.map((p: any) => ({
-          number: p.player.number,
-          name: p.player.name.split(' ').pop() || p.player.name,
-          position: p.player.pos,
-          row: mapGridToRow(p.player.grid),
-        })),
+          players: teamData.startXI.map((p: any) => ({
+            number: p.player.number,
+            name: p.player.name.split(' ').pop() || p.player.name,
+            position: p.player.pos,
+            ...mapGridToRowCol(p.player.grid),
+          })),
         substitutes: (teamData.substitutes || []).map((p: any) => ({
           number: p.player.number,
           name: p.player.name,
@@ -489,7 +581,7 @@ export default function LiveMatchChat() {
       return;
     }
 
-    console.log('ðŸ”„ Fetching live data for fixture:', fixtureId);
+    console.log('Fetching live data for fixture:', fixtureId);
     setError(null);
     
     try {
@@ -526,9 +618,10 @@ export default function LiveMatchChat() {
       setLineups(mapLineups(liveData.lineups));
       
       // LOG WHAT API RETURNS
-      console.log('ðŸ“Š Raw events from API:', liveData.events.length);
-      console.log('ðŸ“Š Event types:', liveData.events.map((e: any) => `${e.time?.elapsed}' ${e.type} - ${e.detail}`));
+      console.log('Raw events from API:', liveData.events.length);
+      console.log('Event types:', liveData.events.map((e: any) => e.time?.elapsed + ' ' + e.type + ' - ' + e.detail));
       
+      setRawEvents(liveData.events || []);
       setPlayByPlayEvents(
         liveData.events.length > 0 ? buildPlayByPlayEvents(liveData.events, mappedMatch) : []
       );
@@ -546,7 +639,7 @@ export default function LiveMatchChat() {
         }, 15000);
       }
     } catch (err) {
-      console.error('âŒ Error fetching live data:', err);
+      console.error('Error fetching live data:', err);
       setError('Failed to load match data');
       setLoading(false);
     }
@@ -566,13 +659,13 @@ export default function LiveMatchChat() {
 
   // REAL FIREBASE CHAT SUBSCRIPTION
   useEffect(() => {
-    console.log('ðŸ”¥ Subscribing to Firebase chat:', chatRoomId);
+    console.log('Subscribing to Firebase chat:', chatRoomId);
     const unsubscribe = chatService.subscribeToChat(chatRoomId, (newMessages) => {
-      console.log('ðŸ“¨ Chat messages updated:', newMessages.length);
+      console.log('Chat messages updated:', newMessages.length);
       setMessages(newMessages);
     });
     return () => {
-      console.log('ðŸ”¥ Unsubscribing from Firebase chat');
+      console.log('Unsubscribing from Firebase chat');
       unsubscribe();
     };
   }, [chatRoomId]);
@@ -630,7 +723,7 @@ export default function LiveMatchChat() {
 
   const toggleHeart = async (msg: ChatMessage) => {
     if (msg.type === 'system') return;
-    await toggleReaction(msg.id, '❤️');
+    await toggleReaction(msg.id, '\u2764\uFE0F');
   };
 
   const handleReply = (msg: ChatMessage) => {
@@ -710,6 +803,30 @@ export default function LiveMatchChat() {
     );
   };
 
+  const derivedLineups = useMemo(() => {
+    if (!lineups.home || !lineups.away || !matchData) return lineups;
+    return {
+      home: applySubstitutions(lineups.home, rawEvents, matchData.homeTeamId, currentMatchMinute),
+    away: applySubstitutions(lineups.away, rawEvents, matchData.awayTeamId, currentMatchMinute),
+  };
+  }, [lineups, rawEvents, matchData, currentMatchMinute]);
+
+  const { goalCountsByKey, assistCountsByKey } = useMemo(() => {
+    const goalCountsByKey: Record<string, number> = {};
+    const assistCountsByKey: Record<string, number> = {};
+    for (const event of rawEvents || []) {
+      const type = (event?.type || '').toLowerCase();
+      const detail = (event?.detail || '').toLowerCase();
+      const isGoal = type === 'goal' || detail.includes('goal') || detail.includes('penalty');
+      if (!isGoal) continue;
+      const scorer = nameKey(event?.player?.name);
+      const assist = nameKey(event?.assist?.name);
+      if (scorer) goalCountsByKey[scorer] = (goalCountsByKey[scorer] || 0) + 1;
+      if (assist) assistCountsByKey[assist] = (assistCountsByKey[assist] || 0) + 1;
+    }
+    return { goalCountsByKey, assistCountsByKey };
+  }, [rawEvents]);
+
   const renderMessage = (msg: ChatMessage) => {
     const isCurrentUser = msg.userId === userProfile?.uid;
     const isSystem = msg.type === 'system';
@@ -733,126 +850,126 @@ export default function LiveMatchChat() {
         ]}
         {...panResponder.panHandlers}
       >
-          <Pressable
-            onLongPress={() => handleLongPress(msg)}
-            delayLongPress={350}
-            onPressIn={() => {
-              const now = Date.now();
-              const last = lastTapRef.current[msg.id] || 0;
-              if (now - last < 300) {
-                toggleHeart(msg);
-                lastTapRef.current[msg.id] = 0;
-              } else {
-                lastTapRef.current[msg.id] = now;
-              }
-            }}
+        <Pressable
+          onLongPress={() => handleLongPress(msg)}
+          delayLongPress={350}
+          onPressIn={() => {
+            const now = Date.now();
+            const last = lastTapRef.current[msg.id] || 0;
+            if (now - last < 300) {
+              toggleHeart(msg);
+              lastTapRef.current[msg.id] = 0;
+            } else {
+              lastTapRef.current[msg.id] = now;
+            }
+          }}
+        >
+          <View
+            style={[
+              styles.messageWrapper,
+              isCurrentUser && styles.currentUserMessageWrapper
+            ]}
           >
+            {/* Username and Match Minute on same line */}
+            {!isCurrentUser && (
+              <View style={styles.messageHeader}>
+                <Text style={styles.username}>{msg.username}</Text>
+                {msg.matchMinute !== undefined && (
+                  <Text style={styles.matchMinute}>{msg.matchMinute}'</Text>
+                )}
+              </View>
+            )}
+
+            {/* Current user: show match minute on right */}
+            {isCurrentUser && msg.matchMinute !== undefined && (
+              <Text style={styles.matchMinuteRight}>{msg.matchMinute}'</Text>
+            )}
+
+            {msg.replyTo && (
+              <View style={styles.replyContext}>
+                <Text style={styles.replyContextUser}>@{msg.replyTo.username}</Text>
+                <Text style={styles.replyContextText} numberOfLines={1}>
+                  {msg.replyTo.text}
+                </Text>
+              </View>
+            )}
+
             <View
               style={[
-                styles.messageWrapper,
-                isCurrentUser && styles.currentUserMessageWrapper
+                styles.messageBubble,
+                isCurrentUser && styles.currentUserBubble,
+                { backgroundColor: isCurrentUser ? '#0066CC' : '#2C2C2E' }
               ]}
             >
-              {/* Username and Match Minute on same line */}
-              {!isCurrentUser && (
-                <View style={styles.messageHeader}>
-                  <Text style={styles.username}>{msg.username}</Text>
-                  {msg.matchMinute !== undefined && (
-                    <Text style={styles.matchMinute}>{msg.matchMinute}'</Text>
-                  )}
-                </View>
-              )}
-
-              {/* Current user: show match minute on right */}
-              {isCurrentUser && msg.matchMinute !== undefined && (
-                <Text style={styles.matchMinuteRight}>{msg.matchMinute}'</Text>
-              )}
-
-              {msg.replyTo && (
-                <View style={styles.replyContext}>
-                  <Text style={styles.replyContextUser}>@{msg.replyTo.username}</Text>
-                  <Text style={styles.replyContextText} numberOfLines={1}>
-                    {msg.replyTo.text}
-                  </Text>
-                </View>
-              )}
-
-              <View
-                style={[
-                  styles.messageBubble,
-                  isCurrentUser && styles.currentUserBubble,
-                  { backgroundColor: isCurrentUser ? '#0066CC' : '#2C2C2E' }
-                ]}
-              >
-                <Text style={styles.messageText}>{msg.text}</Text>
-              </View>
+              <Text style={styles.messageText}>{msg.text}</Text>
             </View>
-          </Pressable>
+          </View>
+        </Pressable>
 
-          {Object.keys(msg.reactions || {}).length > 0 && (
-            <View style={styles.reactions}>
-              {Object.entries(msg.reactions).map(([emoji, reaction]) => {
-                const reactionUserIds = reaction.userIds || [];
-                const hasReacted = !!myUid && reactionUserIds.includes(myUid);
+        {Object.keys(msg.reactions || {}).length > 0 && (
+          <View style={styles.reactions}>
+            {Object.entries(msg.reactions).map(([emoji, reaction]) => {
+              const reactionUserIds = reaction.userIds || [];
+              const hasReacted = !!myUid && reactionUserIds.includes(myUid);
+              return (
+                <TouchableOpacity
+                  key={emoji}
+                  style={[styles.reaction, hasReacted && styles.reactionHighlighted]}
+                  onPress={() => toggleReaction(msg.id, emoji)}
+                >
+                  <Text style={styles.reactionEmoji}>{emoji}</Text>
+                  <Text style={[styles.reactionCount, hasReacted && styles.reactionCountHighlighted]}>
+                    {reaction.count}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+        )}
+
+        {showEmojiPicker && selectedMessage?.id === msg.id && (
+          <View
+            style={[
+              styles.contextMenu,
+              isCurrentUser ? styles.contextMenuRight : styles.contextMenuLeft
+            ]}
+          >
+            <TouchableOpacity
+              style={styles.contextMenuItem}
+              onPress={() => handleReply(msg)}
+            >
+              <Ionicons name="arrow-undo" size={16} color="#FFF" />
+              <Text style={styles.contextMenuText}>Reply</Text>
+            </TouchableOpacity>
+
+            <View style={styles.contextMenuDivider} />
+
+            <View style={styles.contextMenuEmojis}>
+              {EMOJI_REACTIONS.map((emoji) => {
+                const hasReacted = !!myUid && msg.reactions?.[emoji]?.userIds?.includes(myUid);
                 return (
                   <TouchableOpacity
                     key={emoji}
-                    style={[styles.reaction, hasReacted && styles.reactionHighlighted]}
+                    style={[
+                      styles.contextMenuEmojiButton,
+                      hasReacted && styles.contextMenuEmojiButtonActive
+                    ]}
                     onPress={() => toggleReaction(msg.id, emoji)}
                   >
-                    <Text style={styles.reactionEmoji}>{emoji}</Text>
-                    <Text style={[styles.reactionCount, hasReacted && styles.reactionCountHighlighted]}>
-                      {reaction.count}
-                    </Text>
+                    <Text style={styles.contextMenuEmoji}>{emoji}</Text>
                   </TouchableOpacity>
                 );
               })}
             </View>
-          )}
-
-          {showEmojiPicker && selectedMessage?.id === msg.id && (
-            <View
-              style={[
-                styles.contextMenu,
-                isCurrentUser ? styles.contextMenuRight : styles.contextMenuLeft
-              ]}
-            >
-              <TouchableOpacity
-                style={styles.contextMenuItem}
-                onPress={() => handleReply(msg)}
-              >
-                <Ionicons name="arrow-undo" size={16} color="#FFF" />
-                <Text style={styles.contextMenuText}>Reply</Text>
-              </TouchableOpacity>
-
-              <View style={styles.contextMenuDivider} />
-
-              <View style={styles.contextMenuEmojis}>
-                {EMOJI_REACTIONS.map((emoji) => {
-                  const hasReacted = !!myUid && msg.reactions?.[emoji]?.userIds?.includes(myUid);
-                  return (
-                    <TouchableOpacity
-                      key={emoji}
-                      style={[
-                        styles.contextMenuEmojiButton,
-                        hasReacted && styles.contextMenuEmojiButtonActive
-                      ]}
-                      onPress={() => toggleReaction(msg.id, emoji)}
-                    >
-                      <Text style={styles.contextMenuEmoji}>{emoji}</Text>
-                    </TouchableOpacity>
-                  );
-                })}
-              </View>
-            </View>
-          )}
-        </View>
+          </View>
+        )}
+      </View>
     );
   };
 
   // PITCH VISUALIZATION (from yesterday's version)
   const renderLineup = (team: 'home' | 'away') => {
-    const lineup = team === 'home' ? lineups.home : lineups.away;
+    const lineup = team === 'home' ? derivedLineups.home : derivedLineups.away;
     const teamName = team === 'home' ? matchData?.home : matchData?.away;
 
     if (!lineup) {
@@ -864,34 +981,30 @@ export default function LiveMatchChat() {
       );
     }
 
-    // Dynamic formation positioning
-    const getFormationPositions = (formation: string) => {
-      const rows = formation.split('-').map(n => parseInt(n));
-      const positions = [[{ left: 50 }]]; // GK always centered
-      
-      rows.forEach(count => {
-        const rowPositions = [];
-        const gap = 100 / (count + 1);
-        
-        for (let i = 1; i <= count; i++) {
-          rowPositions.push({ left: gap * i });
-        }
-        
-        positions.push(rowPositions);
-      });
-      
-      return positions;
-    };
-
-    const positions = getFormationPositions(lineup.formation);
-    const rowCount = positions.length;
-    const rowTops = positions.map((_, index) => {
+    const rows = lineup.formation.split('-').map(n => parseInt(n));
+    const rowCount = rows.length + 1;
+    const rowTops = Array.from({ length: rowCount }, (_, index) => {
       if (rowCount === 1) return 50;
       const start = 85;
       const end = 15;
       const step = (start - end) / (rowCount - 1);
       return start - step * index;
     });
+
+    const playersByRow = Array.from({ length: rowCount }, (_, rowIndex) => {
+      const rowPlayers = lineup.players
+        .filter(player => player.row === rowIndex)
+        .slice()
+        .sort((a, b) => (a.col ?? 0) - (b.col ?? 0));
+      const positions = getRowLeftPercents(rowPlayers.length);
+      const centerIndex = Math.floor(rowPlayers.length / 2);
+      return rowPlayers.map((player, idx) => ({
+        player,
+        left: positions[idx],
+        top: rowTops[rowIndex] ?? 50,
+        isRowCenter: rowPlayers.length % 2 === 1 && idx === centerIndex,
+      }));
+    }).flat();
 
     return (
       <View style={styles.lineupContainer}>
@@ -901,31 +1014,88 @@ export default function LiveMatchChat() {
             <Text style={styles.formationText}>{lineup.formation}</Text>
           </View>
         </View>
-        
+
         {/* GREEN PITCH WITH PLAYERS */}
         <View style={styles.pitch}>
           <View style={styles.pitchCenter} />
           <View style={styles.pitchCenterCircle} />
-          
-          {lineup.players.map((player) => {
-            const row = player.row;
-            const positionsInRow = positions[row];
-            const playerIndexInRow = lineup.players.filter(p => p.row === row).indexOf(player);
-            const position = positionsInRow[playerIndexInRow];
-            const top = rowTops[row] ?? 50;
 
-            if (!position) {
-              return null;
-            }
-            
+          {playersByRow.map(({ player, left, top }) => {
+            const playerKey = nameKey(player.name);
+            const goals = goalCountsByKey[playerKey] || 0;
+            const assists = assistCountsByKey[playerKey] || 0;
+            const cap = 3;
+            const assistShown = Math.min(assists, cap);
+            const goalShown = Math.min(goals, cap);
+            const extraAssists = assists - assistShown;
+            const extraGoals = goals - goalShown;
+
             return (
               <View
                 key={player.number}
                 style={[
                   styles.playerDot,
-                  { top: `${top}%`, left: `${position.left}%` }
+                  {
+                    top: `${top}%`,
+                    left: `${left}%`,
+                    transform: [{ translateX: -MARKER_HALF }],
+                  }
                 ]}
               >
+                {assists > 0 && (
+                  <View style={styles.assistCluster}>
+                    <View style={styles.stackRow}>
+                      {Array.from({ length: assistShown }).map((_, idx) => (
+                        <View
+                          key={`${player.number}-a-${idx}`}
+                          style={[
+                            styles.stackDotWrap,
+                            idx === 0 && { marginLeft: 0 },
+                            { transform: [{ translateY: idx * 1 }] },
+                          ]}
+                        >
+                          <View style={styles.dot}>
+                            <Text style={styles.dotText}>{'\uD83D\uDC5F'}</Text>
+                          </View>
+                        </View>
+                      ))}
+                      {extraAssists > 0 && (
+                        <View style={styles.stackDotWrap}>
+                          <View style={styles.dot}>
+                            <Text style={styles.dotPlus}>+{extraAssists}</Text>
+                          </View>
+                        </View>
+                      )}
+                    </View>
+                  </View>
+                )}
+                {goals > 0 && (
+                  <View style={styles.goalCluster}>
+                    <View style={styles.stackRow}>
+                      {Array.from({ length: goalShown }).map((_, idx) => (
+                        <View
+                          key={`${player.number}-g-${idx}`}
+                          style={[
+                            styles.stackDotWrap,
+                            idx === 0 && { marginLeft: 0 },
+                            { transform: [{ translateY: idx * 1 }] },
+                          ]}
+                        >
+                          <View style={styles.dot}>
+                            <Text style={styles.dotText}>{'\u26BD'}</Text>
+                          </View>
+                        </View>
+                      ))}
+                      {extraGoals > 0 && (
+                        <View style={styles.stackDotWrap}>
+                          <View style={styles.dot}>
+                            <Text style={styles.dotPlus}>+{extraGoals}</Text>
+                          </View>
+                        </View>
+                      )}
+                    </View>
+                  </View>
+                )}
                 <View style={styles.playerCircle}>
                   <Text style={styles.playerNumber}>{player.number}</Text>
                 </View>
@@ -939,8 +1109,8 @@ export default function LiveMatchChat() {
         {lineup.substitutes?.length > 0 && (
           <View style={styles.substitutesSection}>
             <Text style={styles.substitutesTitle}>Substitutes</Text>
-            <ScrollView 
-              horizontal 
+            <ScrollView
+              horizontal
               showsHorizontalScrollIndicator={false}
               contentContainerStyle={styles.substitutesHorizontal}
             >
@@ -956,7 +1126,6 @@ export default function LiveMatchChat() {
       </View>
     );
   };
-
   if (loading) {
     return (
       <View style={[styles.container, styles.centerContent]}>
@@ -982,28 +1151,34 @@ export default function LiveMatchChat() {
     <SafeAreaView style={styles.container}>
       {/* Header */}
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()}>
-          <Ionicons name="chevron-back" size={24} color="#FFF" />
-        </TouchableOpacity>
-        
-        <View style={styles.matchInfo}>
-          <Text style={styles.league}>{matchData.league}</Text>
-          <View style={styles.scoreContainer}>
-            <Text style={styles.teamName}>{matchData.home}</Text>
-            <View style={styles.score}>
-              <Text style={styles.scoreText}>{matchData.homeScore}</Text>
-              <Text style={styles.scoreSeparator}>-</Text>
-              <Text style={styles.scoreText}>{matchData.awayScore}</Text>
+        <View style={styles.headerSide}>
+          <TouchableOpacity onPress={() => router.back()}>
+            <Ionicons name="chevron-back" size={24} color="#FFF" />
+          </TouchableOpacity>
+        </View>
+
+        <View style={styles.headerSide} />
+
+        <View pointerEvents="none" style={styles.scoreBlock}>
+          <Text style={styles.leagueText}>{matchData?.league}</Text>
+          <View style={styles.scoreRow}>
+            <Text numberOfLines={1} style={[styles.teamNameHeader, styles.teamNameLeft]}>
+              {matchData?.home}
+            </Text>
+            <View style={styles.scorePill}>
+              <Text style={styles.scorePillText}>{matchData?.homeScore ?? 0}</Text>
+              <Text style={styles.scoreDash}>-</Text>
+              <Text style={styles.scorePillText}>{matchData?.awayScore ?? 0}</Text>
             </View>
-            <Text style={styles.teamName}>{matchData.away}</Text>
+            <Text numberOfLines={1} style={[styles.teamNameHeader, styles.teamNameRight]}>
+              {matchData?.away}
+            </Text>
           </View>
-          <View style={styles.liveIndicator}>
+          <View style={styles.minutePill}>
             <View style={styles.liveDot} />
-            <Text style={styles.liveText}>{matchData.minute}</Text>
+            <Text style={styles.minuteText}>{matchData?.minute}</Text>
           </View>
         </View>
-        
-        <View style={{ width: 24 }} />
       </View>
 
       {/* 3 TABS: Chat, Match Facts, Lineups */}
@@ -1195,17 +1370,33 @@ const styles = StyleSheet.create({
     color: '#FFF',
   },
   header: {
+    position: 'relative',
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingHorizontal: 16,
     paddingTop: 60,
-    paddingBottom: 16,
+    paddingBottom: 18,
+    minHeight: 140,
     backgroundColor: '#2C2C2E',
   },
-  matchInfo: {
+  scoreBlock: {
+    position: 'absolute',
+    left: 16,
+    right: 16,
+    top: 52,
+    alignItems: 'center',
+  },
+  headerSide: {
+    width: 44,
+    height: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  headerCenter: {
     flex: 1,
     alignItems: 'center',
+    justifyContent: 'center',
   },
   league: {
     fontSize: 12,
@@ -1213,34 +1404,51 @@ const styles = StyleSheet.create({
     color: '#999',
     marginBottom: 4,
   },
-  scoreContainer: {
+  leagueText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#999',
+    marginBottom: 6,
+  },
+  scoreRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 12,
+    justifyContent: 'center',
+    gap: 10,
+    width: '100%',
   },
-  teamName: {
-    fontSize: 16,
+  teamNameHeader: {
+    fontSize: 14,
     fontWeight: '700',
     color: '#FFF',
+    maxWidth: 120,
   },
-  score: {
+  teamNameLeft: {
+    textAlign: 'right',
+  },
+  teamNameRight: {
+    textAlign: 'left',
+  },
+  scorePill: {
     flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'center',
     backgroundColor: '#3C3C3E',
-    paddingHorizontal: 12,
+    paddingHorizontal: 10,
     paddingVertical: 6,
-    borderRadius: 8,
+    borderRadius: 10,
+    minWidth: 64,
   },
-  scoreText: {
-    fontSize: 20,
-    fontWeight: '800',
+  scorePillText: {
+    fontSize: 18,
+    fontWeight: '900',
     color: '#FFF',
   },
-  scoreSeparator: {
-    fontSize: 20,
-    fontWeight: '800',
-    color: '#666',
-    marginHorizontal: 8,
+  scoreDash: {
+    fontSize: 18,
+    fontWeight: '900',
+    color: '#777',
+    marginHorizontal: 6,
   },
   liveIndicator: {
     flexDirection: 'row',
@@ -1261,6 +1469,20 @@ const styles = StyleSheet.create({
   liveText: {
     fontSize: 12,
     fontWeight: '700',
+    color: '#FFF',
+  },
+  minutePill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FF3B30',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 8,
+    marginTop: 8,
+  },
+  minuteText: {
+    fontSize: 12,
+    fontWeight: '800',
     color: '#FFF',
   },
   tabs: {
@@ -1599,7 +1821,7 @@ const styles = StyleSheet.create({
     backgroundColor: '#2C2C2E',
     alignItems: 'center',
   },
-  minuteText: {
+  playByPlayMinuteText: {
     fontSize: 12,
     fontWeight: '700',
     color: '#FFF',
@@ -1699,7 +1921,45 @@ const styles = StyleSheet.create({
   playerDot: {
     position: 'absolute',
     alignItems: 'center',
-    transform: [{ translateX: -20 }, { translateY: -20 }],
+    width: MARKER_SIZE,
+    height: MARKER_SIZE,
+    zIndex: 10,
+  },
+  assistCluster: {
+    position: 'absolute',
+    top: -10,
+    left: -6,
+    zIndex: 60,
+  },
+  goalCluster: {
+    position: 'absolute',
+    top: -10,
+    right: -6,
+    zIndex: 60,
+  },
+  stackRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  stackDotWrap: {
+    marginLeft: -8,
+  },
+  dot: {
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    backgroundColor: 'rgba(255,255,255,0.95)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    ...shadow({ y: 2, blur: 6, opacity: 0.18, elevation: 3 }),
+  },
+  dotText: {
+    fontSize: 11,
+    fontWeight: '900',
+  },
+  dotPlus: {
+    fontSize: 9,
+    fontWeight: '900',
   },
   playerCircle: {
     width: 40,
