@@ -1,11 +1,13 @@
 ﻿// app/(tabs)/explore.tsx
 // IMPROVED: League browsing, team directory, better search
+// UPDATED: Removed "Friendlies Clubs" and "Community" leagues from Browse Leagues
 
 import { Ionicons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  FlatList,
   Image,
   ScrollView,
   StyleSheet,
@@ -18,18 +20,129 @@ import { shadow } from '../../components/styleUtils';
 import { Community, communityService } from '../../services/communityService';
 import { footballAPI, Match } from '../../services/footballApi';
 import { newsAPI, NewsArticle, RateLimitError } from '../../services/newsApi';
+import { useOpenArticle } from '../../hooks/useOpenArticle';
+import { getCachedValue, getCachedValueAsync, setCachedValue } from '../../services/cacheService';
+
+const LIVE_TTL_MS = 60 * 1000;
+const UPCOMING_TTL_MS = 60 * 1000;
+const RESULTS_TTL_MS = 10 * 60 * 1000;
+const NEWS_TTL_MS = 10 * 60 * 1000;
+const RESULTS_LIMIT = 8;
+const NEWS_LIMIT = 8;
+
+type MatchCardVariant = 'live' | 'upcoming' | 'results';
+
+const CompactMatchCard = memo(
+  ({
+    match,
+    variant,
+    onPress
+  }: {
+    match: Match;
+    variant: MatchCardVariant;
+    onPress: (match: Match) => void;
+  }) => {
+    const showLive = variant === 'live';
+    const showUpcoming = variant === 'upcoming';
+    const scoreLabel = match.score || (showUpcoming ? 'VS' : '0-0');
+    const timeLabel = showLive ? match.minute : match.time || '';
+
+    return (
+      <TouchableOpacity style={styles.compactMatchCard} onPress={() => onPress(match)} activeOpacity={0.85}>
+        <View style={styles.compactMatchHeader}>
+          <Text style={styles.compactLeague} numberOfLines={1}>
+            {match.league}
+          </Text>
+          {showLive && (
+            <View style={styles.compactLiveBadge}>
+              <View style={styles.compactLiveDot} />
+              <Text style={styles.compactLiveText}>LIVE</Text>
+            </View>
+          )}
+        </View>
+
+        <View style={styles.compactTeamsRow}>
+          <View style={styles.compactTeam}>
+            {match.homeLogo ? (
+              <Image source={{ uri: match.homeLogo, cache: 'force-cache' }} style={styles.compactLogo} resizeMode="contain" />
+            ) : (
+              <View style={styles.compactLogoPlaceholder} />
+            )}
+            <Text style={styles.compactTeamName} numberOfLines={1}>
+              {match.home}
+            </Text>
+          </View>
+
+          <View style={styles.compactScoreBlock}>
+            <Text style={styles.compactScore}>{scoreLabel}</Text>
+            {timeLabel ? <Text style={styles.compactTime}>{timeLabel}</Text> : null}
+          </View>
+
+          <View style={styles.compactTeam}>
+            {match.awayLogo ? (
+              <Image source={{ uri: match.awayLogo, cache: 'force-cache' }} style={styles.compactLogo} resizeMode="contain" />
+            ) : (
+              <View style={styles.compactLogoPlaceholder} />
+            )}
+            <Text style={styles.compactTeamName} numberOfLines={1}>
+              {match.away}
+            </Text>
+          </View>
+        </View>
+      </TouchableOpacity>
+    );
+  }
+);
+
+const CompactNewsCard = memo(
+  ({
+    article,
+    onPress,
+    onPressIn
+  }: {
+    article: NewsArticle;
+    onPress: (article: NewsArticle) => void;
+    onPressIn?: (article: NewsArticle) => void;
+  }) => (
+    <TouchableOpacity
+      style={styles.compactNewsCard}
+      onPress={() => onPress(article)}
+      onPressIn={() => onPressIn?.(article)}
+      activeOpacity={0.85}
+    >
+      {article.imageUrl ? (
+        <Image source={{ uri: article.imageUrl, cache: 'force-cache' }} style={styles.compactNewsImage} resizeMode="cover" />
+      ) : null}
+      <View style={styles.compactNewsBody}>
+        <Text style={styles.compactNewsTitle} numberOfLines={2}>
+          {article.title}
+        </Text>
+        <Text style={styles.compactNewsSource} numberOfLines={1}>
+          {article.source}
+        </Text>
+      </View>
+    </TouchableOpacity>
+  )
+);
 
 export default function ExploreScreen() {
   const router = useRouter();
   const { mode, q, type, initialTab } = useLocalSearchParams();
+  const { openArticle, prefetchArticle } = useOpenArticle();
   
   const tabParam = Array.isArray(initialTab) ? initialTab[0] : initialTab;
   const newsOnlyMode = (Array.isArray(mode) ? mode[0] : mode) === 'news' || (Array.isArray(type) ? type[0] : type) === 'news' || tabParam === 'news';
   const initialQuery = Array.isArray(q) ? q[0] : q;
   
   const deriveExploreData = useCallback((allCommunities: Community[]) => {
-    // Get leagues
-    const leagueList = allCommunities.filter(c => c.type === 'league');
+    // Get leagues - FILTER OUT FRIENDLIES AND COMMUNITY
+    const leagueList = allCommunities.filter(c => {
+      if (c.type !== 'league') return false;
+      const name = c.name.toLowerCase();
+      return !name.includes('friendlies') && 
+             !name.includes('community') &&
+             name !== 'friendlies clubs';
+    });
 
     // Get popular teams (from major leagues)
     const popularLeagues = ['Premier League', 'La Liga', 'Serie A', 'Bundesliga', 'Ligue 1'];
@@ -43,6 +156,14 @@ export default function ExploreScreen() {
   const cached = useMemo(() => communityService.getCachedAllCommunities(), []);
   const cachedAll = cached?.data ?? [];
   const [allCommunities, setAllCommunities] = useState<Community[]>(cachedAll);
+  const [liveMatches, setLiveMatches] = useState<Match[]>(getCachedValue('explore:live', LIVE_TTL_MS) ?? []);
+  const [upcomingMatches, setUpcomingMatches] = useState<Match[]>(getCachedValue('explore:upcoming', UPCOMING_TTL_MS) ?? []);
+  const [recentResults, setRecentResults] = useState<Match[]>(getCachedValue('explore:results', RESULTS_TTL_MS) ?? []);
+  const [newsItems, setNewsItems] = useState<NewsArticle[]>(getCachedValue('explore:news', NEWS_TTL_MS) ?? []);
+  const [loadingLive, setLoadingLive] = useState(liveMatches.length === 0);
+  const [loadingUpcoming, setLoadingUpcoming] = useState(upcomingMatches.length === 0);
+  const [loadingResults, setLoadingResults] = useState(recentResults.length === 0);
+  const [loadingNews, setLoadingNews] = useState(newsItems.length === 0);
   const exploreData = useMemo(() => {
     if (__DEV__) {
       console.time('explore.derive');
@@ -78,10 +199,6 @@ export default function ExploreScreen() {
   const latestSearchRef = useRef('');
   const mountTimeRef = useRef(Date.now());
   const firstRenderLoggedRef = useRef(false);
-
-  useEffect(() => {
-    loadExplorePage();
-  }, []);
 
   useEffect(() => {
     if (initialQuery) {
@@ -124,7 +241,7 @@ export default function ExploreScreen() {
     };
   }, [searchQuery]);
 
-  const loadExplorePage = async () => {
+  const loadExplorePage = useCallback(async () => {
     try {
       if (__DEV__) {
         console.time('explore.load');
@@ -152,7 +269,11 @@ export default function ExploreScreen() {
         console.timeEnd('explore.load');
       }
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    loadExplorePage();
+  }, [loadExplorePage]);
 
   const dedupeNewsByUrl = useCallback((articles: NewsArticle[]) => {
     const seen = new Set<string>();
@@ -208,10 +329,114 @@ export default function ExploreScreen() {
     }
   }, [dedupeNewsByUrl, newsHasMore, newsLoadingMore]);
 
+  const hydrateExploreCache = useCallback(async () => {
+    const [live, upcoming, results, news] = await Promise.all([
+      getCachedValueAsync<Match[]>('explore:live', LIVE_TTL_MS),
+      getCachedValueAsync<Match[]>('explore:upcoming', UPCOMING_TTL_MS),
+      getCachedValueAsync<Match[]>('explore:results', RESULTS_TTL_MS),
+      getCachedValueAsync<NewsArticle[]>('explore:news', NEWS_TTL_MS)
+    ]);
+
+    if (live) {
+      setLiveMatches(live);
+      setLoadingLive(false);
+    }
+    if (upcoming) {
+      setUpcomingMatches(upcoming);
+      setLoadingUpcoming(false);
+    }
+    if (results) {
+      setRecentResults(results);
+      setLoadingResults(false);
+    }
+    if (news) {
+      setNewsItems(news);
+      setLoadingNews(false);
+    }
+  }, []);
+
+  const refreshExploreSections = useCallback(
+    async (force: boolean = false) => {
+      const shouldFetchLive = force || !getCachedValue<Match[]>('explore:live', LIVE_TTL_MS);
+      const shouldFetchUpcoming = force || !getCachedValue<Match[]>('explore:upcoming', UPCOMING_TTL_MS);
+      const shouldFetchResults = force || !getCachedValue<Match[]>('explore:results', RESULTS_TTL_MS);
+      const shouldFetchNews = force || !getCachedValue<NewsArticle[]>('explore:news', NEWS_TTL_MS);
+
+      const tasks: Promise<void>[] = [];
+
+      if (shouldFetchLive) {
+        if (liveMatches.length === 0) setLoadingLive(true);
+        tasks.push(
+          (async () => {
+            const data = await footballAPI.getLiveMatches();
+            setLiveMatches(data);
+            await setCachedValue('explore:live', data);
+            setLoadingLive(false);
+          })()
+        );
+      }
+
+      if (shouldFetchUpcoming) {
+        if (upcomingMatches.length === 0) setLoadingUpcoming(true);
+        tasks.push(
+          (async () => {
+            const data = await footballAPI.getUpcomingMatches();
+            setUpcomingMatches(data);
+            await setCachedValue('explore:upcoming', data);
+            setLoadingUpcoming(false);
+          })()
+        );
+      }
+
+      if (shouldFetchResults) {
+        if (recentResults.length === 0) setLoadingResults(true);
+        tasks.push(
+          (async () => {
+            const data = await footballAPI.getFinishedFixtures(3);
+            const trimmed = data.slice(0, RESULTS_LIMIT);
+            setRecentResults(trimmed);
+            await setCachedValue('explore:results', trimmed);
+            setLoadingResults(false);
+          })()
+        );
+      }
+
+      if (shouldFetchNews) {
+        if (newsItems.length === 0) setLoadingNews(true);
+        tasks.push(
+          (async () => {
+            const response = await newsAPI.getSoccerNewsPage(1, NEWS_LIMIT);
+            const valid = response.articles.filter(article => article.title && article.url);
+            const unique = dedupeNewsByUrl(valid).slice(0, NEWS_LIMIT);
+            setNewsItems(unique);
+            await setCachedValue('explore:news', unique);
+            setLoadingNews(false);
+          })()
+        );
+      }
+
+      if (tasks.length > 0) {
+        await Promise.all(tasks);
+      }
+    },
+    [dedupeNewsByUrl, liveMatches.length, newsItems.length, recentResults.length, upcomingMatches.length]
+  );
+
+  useEffect(() => {
+    hydrateExploreCache();
+    refreshExploreSections(false);
+  }, [hydrateExploreCache, refreshExploreSections]);
+
   const loadMatchesCache = useCallback(async () => {
     const age = Date.now() - matchesCacheAtRef.current;
     if (matchesCacheRef.current.length > 0 && age < 2 * 60 * 1000) {
       return matchesCacheRef.current;
+    }
+    if (liveMatches.length || upcomingMatches.length) {
+      const combined = [...liveMatches, ...upcomingMatches];
+      matchesCacheRef.current = combined;
+      matchesCacheAtRef.current = Date.now();
+      return combined;
     }
     if (matchesLoadRef.current) {
       return matchesLoadRef.current;
@@ -300,7 +525,7 @@ export default function ExploreScreen() {
       onPress={() => router.push(`/leagueCommunity/${league.id}` as any)}
     >
       {league.logo ? (
-        <Image source={{ uri: league.logo }} style={styles.leagueLogo} resizeMode="contain" />
+        <Image source={{ uri: league.logo, cache: 'force-cache' }} style={styles.leagueLogo} resizeMode="contain" />
       ) : (
         <View style={styles.leagueLogoPlaceholder}>
           <Ionicons name="trophy" size={24} color="#0066CC" />
@@ -320,7 +545,7 @@ export default function ExploreScreen() {
       onPress={() => router.push(`/teamCommunity/${team.id}` as any)}
     >
       {team.logo ? (
-        <Image source={{ uri: team.logo }} style={styles.teamLogo} resizeMode="contain" />
+        <Image source={{ uri: team.logo, cache: 'force-cache' }} style={styles.teamLogo} resizeMode="contain" />
       ) : (
         <View style={styles.teamLogoPlaceholder}>
           <Ionicons name="shield" size={20} color="#0066CC" />
@@ -354,7 +579,7 @@ export default function ExploreScreen() {
       <View style={styles.matchResultTeams}>
         <View style={styles.matchResultTeam}>
           {match.homeLogo && (
-            <Image source={{ uri: match.homeLogo }} style={styles.matchResultLogo} resizeMode="contain" />
+            <Image source={{ uri: match.homeLogo, cache: 'force-cache' }} style={styles.matchResultLogo} resizeMode="contain" />
           )}
           <Text style={styles.matchResultTeamName} numberOfLines={1}>{match.home}</Text>
         </View>
@@ -363,7 +588,7 @@ export default function ExploreScreen() {
         </View>
         <View style={styles.matchResultTeam}>
           {match.awayLogo && (
-            <Image source={{ uri: match.awayLogo }} style={styles.matchResultLogo} resizeMode="contain" />
+            <Image source={{ uri: match.awayLogo, cache: 'force-cache' }} style={styles.matchResultLogo} resizeMode="contain" />
           )}
           <Text style={styles.matchResultTeamName} numberOfLines={1}>{match.away}</Text>
         </View>
@@ -371,21 +596,62 @@ export default function ExploreScreen() {
     </TouchableOpacity>
   ), [router]);
 
+  const handleLivePress = useCallback((match: Match) => {
+    router.push(`/chat/${match.id}` as any);
+  }, [router]);
+
+  const handleUpcomingPress = useCallback((match: Match) => {
+    router.push(`/matchPreview/${match.id}` as any);
+  }, [router]);
+
+  const handleResultPress = useCallback((match: Match) => {
+    router.push(`/chat/${match.id}` as any);
+  }, [router]);
+
+  const renderLiveCard = useCallback(
+    ({ item }: { item: Match }) => (
+      <CompactMatchCard match={item} variant="live" onPress={handleLivePress} />
+    ),
+    [handleLivePress]
+  );
+
+  const renderUpcomingCard = useCallback(
+    ({ item }: { item: Match }) => (
+      <CompactMatchCard match={item} variant="upcoming" onPress={handleUpcomingPress} />
+    ),
+    [handleUpcomingPress]
+  );
+
+  const renderResultCard = useCallback(
+    ({ item }: { item: Match }) => (
+      <CompactMatchCard match={item} variant="results" onPress={handleResultPress} />
+    ),
+    [handleResultPress]
+  );
+
+  const renderNewsCard = useCallback(
+    ({ item }: { item: NewsArticle }) => (
+      <CompactNewsCard article={item} onPress={openArticle} onPressIn={prefetchArticle} />
+    ),
+    [openArticle, prefetchArticle]
+  );
+
   const renderNewsResult = useCallback((article: NewsArticle) => (
     <TouchableOpacity
       key={article.id}
       style={styles.newsResult}
-      onPress={() => router.push({ pathname: '/news/reader', params: { url: article.url, title: article.title, source: article.source, author: article.author || '', publishedAt: article.publishedAt, imageUrl: article.imageUrl || '' } } as any)}
+      onPress={() => openArticle(article)}
+      onPressIn={() => prefetchArticle(article)}
     >
       {article.imageUrl && (
-        <Image source={{ uri: article.imageUrl }} style={styles.newsResultImage} resizeMode="cover" />
+        <Image source={{ uri: article.imageUrl, cache: 'force-cache' }} style={styles.newsResultImage} resizeMode="cover" />
       )}
       <View style={styles.newsResultContent}>
         <Text style={styles.newsResultTitle} numberOfLines={2}>{article.title}</Text>
         <Text style={styles.newsResultMeta}>{article.source}</Text>
       </View>
     </TouchableOpacity>
-  ), [router]);
+  ), [openArticle, prefetchArticle]);
 
   const showSkeleton = loading && leagues.length === 0 && popularTeams.length === 0;
   
@@ -564,7 +830,135 @@ export default function ExploreScreen() {
               </View>
             </View>
 
-            {/* Browse Leagues */}
+            {!newsOnlyMode && (
+              <>
+                {/* Live Now */}
+                {(loadingLive || liveMatches.length > 0) && (
+                  <View style={styles.section}>
+                    <View style={styles.sectionHeader}>
+                      <Text style={styles.sectionTitle}>Live Now</Text>
+                      <TouchableOpacity onPress={() => router.push('/live' as any)}>
+                        <Text style={styles.seeAllText}>See All</Text>
+                      </TouchableOpacity>
+                    </View>
+                    {loadingLive && liveMatches.length === 0 ? (
+                      <View style={styles.inlineLoader}>
+                        <ActivityIndicator size="small" color="#0066CC" />
+                        <Text style={styles.inlineLoaderText}>Loading live matches...</Text>
+                      </View>
+                    ) : (
+                      <FlatList
+                        data={liveMatches}
+                        keyExtractor={(item) => item.id.toString()}
+                        renderItem={renderLiveCard}
+                        horizontal
+                        showsHorizontalScrollIndicator={false}
+                        contentContainerStyle={styles.horizontalList}
+                        initialNumToRender={4}
+                        maxToRenderPerBatch={6}
+                        windowSize={3}
+                        removeClippedSubviews
+                      />
+                    )}
+                  </View>
+                )}
+
+                {/* Upcoming */}
+                {(loadingUpcoming || upcomingMatches.length > 0) && (
+                  <View style={styles.section}>
+                    <View style={styles.sectionHeader}>
+                      <Text style={styles.sectionTitle}>Upcoming</Text>
+                      <TouchableOpacity onPress={() => router.push('/upcoming' as any)}>
+                        <Text style={styles.seeAllText}>See All</Text>
+                      </TouchableOpacity>
+                    </View>
+                    {loadingUpcoming && upcomingMatches.length === 0 ? (
+                      <View style={styles.inlineLoader}>
+                        <ActivityIndicator size="small" color="#0066CC" />
+                        <Text style={styles.inlineLoaderText}>Loading upcoming matches...</Text>
+                      </View>
+                    ) : (
+                      <FlatList
+                        data={upcomingMatches.slice(0, 8)}
+                        keyExtractor={(item) => item.id.toString()}
+                        renderItem={renderUpcomingCard}
+                        horizontal
+                        showsHorizontalScrollIndicator={false}
+                        contentContainerStyle={styles.horizontalList}
+                        initialNumToRender={4}
+                        maxToRenderPerBatch={6}
+                        windowSize={3}
+                        removeClippedSubviews
+                      />
+                    )}
+                  </View>
+                )}
+
+                {/* Results */}
+                <View style={styles.section}>
+                  <View style={styles.sectionHeader}>
+                    <Text style={styles.sectionTitle}>Results</Text>
+                    <TouchableOpacity onPress={() => router.push('/results' as any)}>
+                      <Text style={styles.seeAllText}>See All</Text>
+                    </TouchableOpacity>
+                  </View>
+                  {loadingResults && recentResults.length === 0 ? (
+                    <View style={styles.inlineLoader}>
+                      <ActivityIndicator size="small" color="#0066CC" />
+                      <Text style={styles.inlineLoaderText}>Loading results...</Text>
+                    </View>
+                  ) : recentResults.length === 0 ? (
+                    <Text style={styles.emptySectionText}>No recent results</Text>
+                  ) : (
+                    <FlatList
+                      data={recentResults}
+                      keyExtractor={(item) => item.id.toString()}
+                      renderItem={renderResultCard}
+                      horizontal
+                      showsHorizontalScrollIndicator={false}
+                      contentContainerStyle={styles.horizontalList}
+                      initialNumToRender={4}
+                      maxToRenderPerBatch={6}
+                      windowSize={3}
+                      removeClippedSubviews
+                    />
+                  )}
+                </View>
+              </>
+            )}
+
+            {/* News */}
+            {(loadingNews || newsItems.length > 0) && (
+              <View style={styles.section}>
+                <View style={styles.sectionHeader}>
+                  <Text style={styles.sectionTitle}>Latest News</Text>
+                  <TouchableOpacity onPress={() => router.push('/news' as any)}>
+                    <Text style={styles.seeAllText}>See All</Text>
+                  </TouchableOpacity>
+                </View>
+                {loadingNews && newsItems.length === 0 ? (
+                  <View style={styles.inlineLoader}>
+                    <ActivityIndicator size="small" color="#0066CC" />
+                    <Text style={styles.inlineLoaderText}>Loading news...</Text>
+                  </View>
+                ) : (
+                  <FlatList
+                    data={newsItems}
+                    keyExtractor={(item) => item.id.toString()}
+                    renderItem={renderNewsCard}
+                    horizontal
+                    showsHorizontalScrollIndicator={false}
+                    contentContainerStyle={styles.horizontalList}
+                    initialNumToRender={4}
+                    maxToRenderPerBatch={6}
+                    windowSize={3}
+                    removeClippedSubviews
+                  />
+                )}
+              </View>
+            )}
+
+            {/* Browse Leagues - FILTERED */}
             <View style={styles.section}>
               <View style={styles.sectionHeader}>
                 <Text style={styles.sectionTitle}>Browse Leagues</Text>
@@ -949,6 +1343,136 @@ const styles = StyleSheet.create({
     color: '#000',
     letterSpacing: 1,
   },
+
+  // Compact match cards (Live/Upcoming/Results)
+  horizontalList: {
+    paddingHorizontal: 16,
+    gap: 12,
+    paddingBottom: 4,
+  },
+  inlineLoader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingHorizontal: 20,
+    paddingBottom: 8,
+  },
+  inlineLoaderText: {
+    fontSize: 13,
+    color: '#666',
+  },
+  emptySectionText: {
+    fontSize: 13,
+    color: '#888',
+    paddingHorizontal: 20,
+  },
+  compactMatchCard: {
+    width: 220,
+    backgroundColor: '#FFF',
+    borderRadius: 14,
+    padding: 12,
+    ...shadow({ y: 2, blur: 8, opacity: 0.08, elevation: 3 }),
+  },
+  compactMatchHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 10,
+  },
+  compactLeague: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#0066CC',
+    flex: 1,
+    marginRight: 8,
+  },
+  compactLiveBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FFF1F0',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 6,
+  },
+  compactLiveDot: {
+    width: 5,
+    height: 5,
+    borderRadius: 3,
+    backgroundColor: '#FF3B30',
+    marginRight: 4,
+  },
+  compactLiveText: {
+    fontSize: 10,
+    fontWeight: '700',
+    color: '#FF3B30',
+  },
+  compactTeamsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  compactTeam: {
+    flex: 1,
+    alignItems: 'center',
+    gap: 6,
+  },
+  compactLogo: {
+    width: 26,
+    height: 26,
+  },
+  compactLogoPlaceholder: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: '#F0F0F0',
+  },
+  compactTeamName: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#000',
+    textAlign: 'center',
+  },
+  compactScoreBlock: {
+    width: 56,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 2,
+  },
+  compactScore: {
+    fontSize: 14,
+    fontWeight: '800',
+    color: '#000',
+  },
+  compactTime: {
+    fontSize: 11,
+    color: '#666',
+  },
+
+  // Compact news cards
+  compactNewsCard: {
+    width: 220,
+    backgroundColor: '#FFF',
+    borderRadius: 14,
+    overflow: 'hidden',
+    ...shadow({ y: 2, blur: 8, opacity: 0.08, elevation: 3 }),
+  },
+  compactNewsImage: {
+    width: '100%',
+    height: 110,
+  },
+  compactNewsBody: {
+    padding: 12,
+  },
+  compactNewsTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#000',
+    marginBottom: 6,
+  },
+  compactNewsSource: {
+    fontSize: 11,
+    color: '#666',
+  },
   
   // News Results
   newsResult: {
@@ -992,5 +1516,3 @@ const styles = StyleSheet.create({
     marginTop: 16,
   },
 });
-
-

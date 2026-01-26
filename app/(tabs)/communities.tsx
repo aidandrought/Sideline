@@ -3,7 +3,7 @@
 
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   Image,
@@ -41,11 +41,6 @@ export default function CommunitiesScreen() {
   // Follow state
   const [followedIds, setFollowedIds] = useState<Set<number>>(new Set());
 
-  // FIX 1 & 2: Load communities immediately on mount, generate once
-  useEffect(() => {
-    loadAllCommunities();
-  }, []);
-
   // Load user follows separately
   useEffect(() => {
     if (userProfile && allCommunities.length > 0) {
@@ -53,28 +48,44 @@ export default function CommunitiesScreen() {
     }
   }, [userProfile, allCommunities]);
 
-  const loadAllCommunities = async () => {
+  const deriveSuggested = useCallback((communities: Community[]) => {
+    const majorLeagues = new Set(['Premier League', 'La Liga', 'Serie A', 'Bundesliga', 'Ligue 1', 'Champions League']);
+    return communities.filter(c => c.type === 'league' && majorLeagues.has(c.name)).slice(0, 6);
+  }, []);
+
+  const loadAllCommunities = useCallback(async () => {
     try {
-      setLoading(true);
-      
-      // FIX 2: Generate communities ONCE from live + upcoming matches
-      const communities = await communityService.getAllCommunities();
-      console.log('✅ Loaded communities:', communities.length);
-      
-      // Store in state - this is stable now
-      setAllCommunities(communities);
-      setDisplayedCommunities(communities);
-      
-      // Load suggested (major leagues)
-      const suggested = await communityService.getSuggestedCommunities();
-      setSuggestedCommunities(suggested);
-      
+      const cachedSnapshot = await communityService.getCachedAllCommunitiesAsync();
+      const cachedData = cachedSnapshot?.data ?? [];
+
+      if (cachedData.length > 0) {
+        setAllCommunities(cachedData);
+        setDisplayedCommunities(cachedData);
+        setSuggestedCommunities(deriveSuggested(cachedData));
+        setLoading(false);
+      } else {
+        setLoading(true);
+      }
+
+      const fresh = await communityService.refreshCommunitiesIfStale();
+      if (fresh) {
+        const next = [...fresh.teams, ...fresh.leagues];
+        console.log('Loaded communities:', next.length);
+        setAllCommunities(next);
+        setDisplayedCommunities(next);
+        setSuggestedCommunities(deriveSuggested(next));
+      }
     } catch (error) {
-      console.error('❌ Error loading communities:', error);
+      console.error('Error loading communities:', error);
     } finally {
       setLoading(false);
     }
-  };
+  }, [deriveSuggested]);
+
+  // FIX 1 & 2: Load communities immediately on mount, generate once
+  useEffect(() => {
+    loadAllCommunities();
+  }, [loadAllCommunities]);
 
   const loadUserFollows = async () => {
     if (!userProfile) return;
@@ -288,7 +299,7 @@ export default function CommunitiesScreen() {
               <View style={styles.myTeamHeader}>
                 {community.logo ? (
                   <Image 
-                    source={{ uri: community.logo }} 
+                    source={{ uri: community.logo, cache: 'force-cache' }} 
                     style={styles.myTeamLogo}
                     resizeMode="contain"
                   />
@@ -341,7 +352,7 @@ export default function CommunitiesScreen() {
           >
             {community.logo ? (
               <Image 
-                source={{ uri: community.logo }} 
+                source={{ uri: community.logo, cache: 'force-cache' }} 
                 style={styles.suggestedLogo}
                 resizeMode="contain"
               />
@@ -399,7 +410,7 @@ export default function CommunitiesScreen() {
           >
             {community.logo ? (
               <Image 
-                source={{ uri: community.logo }} 
+                source={{ uri: community.logo, cache: 'force-cache' }} 
                 style={styles.communityListLogo}
                 resizeMode="contain"
               />
@@ -442,7 +453,7 @@ export default function CommunitiesScreen() {
           >
             {community.logo ? (
               <Image 
-                source={{ uri: community.logo }} 
+                source={{ uri: community.logo, cache: 'force-cache' }} 
                 style={styles.communityListLogo}
                 resizeMode="contain"
               />
@@ -598,7 +609,7 @@ export default function CommunitiesScreen() {
             >
               {community.logo ? (
                 <Image 
-                  source={{ uri: community.logo }} 
+                  source={{ uri: community.logo, cache: 'force-cache' }} 
                   style={styles.searchResultLogo}
                   resizeMode="contain"
                 />
@@ -1122,3 +1133,6 @@ const styles = StyleSheet.create({
     backgroundColor: '#E8F1FF',
   },
 });
+
+
+

@@ -22,7 +22,7 @@ const PAGE_SIZE = 20;
 
 export default function NewsScreen() {
   const router = useRouter();
-  const openArticle = useOpenArticle();
+  const { openArticle, prefetchArticle } = useOpenArticle();
   const searchInputRef = useRef<TextInput>(null);
 
   const [items, setItems] = useState<NewsArticle[]>([]);
@@ -290,6 +290,7 @@ export default function NewsScreen() {
       <TouchableOpacity
         style={styles.heroCard}
         onPress={() => openArticle(heroArticle)}
+        onPressIn={() => prefetchArticle(heroArticle)}
         activeOpacity={0.9}
       >
         <Image
@@ -316,6 +317,7 @@ export default function NewsScreen() {
     <TouchableOpacity
       style={styles.listItem}
       onPress={() => openArticle(item)}
+      onPressIn={() => prefetchArticle(item)}
       activeOpacity={0.7}
     >
       <View style={styles.listItemContent}>

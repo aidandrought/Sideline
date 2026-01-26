@@ -19,6 +19,71 @@ const HIGHLIGHT_TEAMS = [
   'AC Milan', 'Roma', 'Napoli', 'Lazio', 'Inter', 'Milan',
   'Macclesfield', 'Morecambe', 'Hull City',
 ];
+// Add this filter function to your newsAPI service or wherever you process news
+
+export const filterProfessionalFootballNews = (articles: NewsArticle[]): NewsArticle[] => {
+  // Keywords to exclude (college, amateur, youth football)
+  const excludeKeywords = [
+    // College football
+    'college football',
+    'ncaa football',
+    'cfp',
+    'college playoff',
+    'bowl game',
+    'national championship game',
+    'indiana',
+    'heisman',
+    'fbs',
+    'fcs',
+    'acc football',
+    'big ten football',
+    'sec football',
+    'pac-12 football',
+    'big 12 football',
+    'notre dame football',
+    'alabama football',
+    'ohio state football',
+    'michigan football',
+    'georgia football',
+    'clemson football',
+    'usc football',
+    'texas football',
+    'oklahoma football',
+    'penn state football',
+    'florida football',
+    'lsu football',
+    'oregon football',
+    'washington football',
+    'utah football',
+    'miami hurricanes',
+    'florida state',
+    'indiana hoosiers',
+    
+    // High school / youth
+    'high school football',
+    'prep football',
+    'youth football',
+    
+    // Amateur
+    'amateur football',
+    'semi-pro football',
+    
+    // Other American sports (just in case)
+    'american football' // We want soccer/football, not American football
+  ];
+
+  return articles.filter(article => {
+    const text = `${article.title} ${article.description || ''}`.toLowerCase();
+    
+    // Exclude if contains any banned keywords
+    const shouldExclude = excludeKeywords.some(keyword => 
+      text.includes(keyword.toLowerCase())
+    );
+    
+    return !shouldExclude;
+  });
+};
+
 
 export default function NewsDetailScreen() {
   const router = useRouter();

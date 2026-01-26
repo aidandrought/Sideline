@@ -8,6 +8,7 @@ import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-nati
 import { footballAPI, Match } from '../../services/footballApi';
 import { matchDetailService, TeamForm, TeamNews } from '../../services/matchDetailService';
 import { newsAPI, NewsArticle, RateLimitError } from '../../services/newsApi';
+import { useOpenArticle } from '../../hooks/useOpenArticle';
 
 interface NewsReaction {
   [articleId: string]: 'up' | 'down' | null;
@@ -15,6 +16,7 @@ interface NewsReaction {
 
 export default function MatchPreviewScreen() {
   const router = useRouter();
+  const { openArticle, prefetchArticle } = useOpenArticle();
   const { id } = useLocalSearchParams();
   const [match, setMatch] = useState<Match | null>(null);
   const [homeForm, setHomeForm] = useState<TeamForm | null>(null);
@@ -241,7 +243,8 @@ export default function MatchPreviewScreen() {
                 {relatedNews.map((article) => (
                   <View key={article.id} style={[styles.articleCard, isLive && styles.cardLive]}>
                     <TouchableOpacity
-                      onPress={() => router.push({ pathname: '/news/reader', params: { url: article.url, title: article.title, source: article.source, author: article.author || '', publishedAt: article.publishedAt, imageUrl: article.imageUrl || '' } } as any)}
+                      onPress={() => openArticle(article)}
+                      onPressIn={() => prefetchArticle(article)}
                     >
                       <Text style={[styles.articleTitle, isLive && styles.textLive]}>{article.title}</Text>
                       <Text style={[styles.articleDescription, isLive && styles.subTextLive]} numberOfLines={2}>

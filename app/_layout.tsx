@@ -77,6 +77,22 @@ export default function RootLayout() {
           }}
         />
 
+        {/* NEW: Results Screens */}
+        <Stack.Screen 
+          name="results/index" 
+          options={{
+            presentation: 'card',
+            animation: 'slide_from_right'
+          }}
+        />
+        <Stack.Screen 
+          name="results/[id]" 
+          options={{
+            presentation: 'card',
+            animation: 'slide_from_right'
+          }}
+        />
+
         {/* Match Preview (Pre-match info) */}
         <Stack.Screen 
           name="matchPreview/[id]" 

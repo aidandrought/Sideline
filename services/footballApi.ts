@@ -1,7 +1,7 @@
 // services/footballApi.ts
 // STRICT filtering - Only real top leagues, no youth/reserve teams
-// UPDATED: Added community generation methods and league standings
-
+// UPDATED: Added community generation methods, league standings, and finished fixtures
+import { getCachedValueAsync, setCachedValue } from './cacheService';
 export interface Match {
   id: number;
   home: string;
@@ -256,7 +256,27 @@ class FootballAPI {
         
         console.log(`Filtered to ${filtered.length} matches from top leagues`);
         
-        const formatted = this.formatMatches(filtered, 'live');
+        // Separate live and finished matches
+const liveFiltered = filtered.filter((f: any) => {
+  const status = f.fixture?.status?.short;
+  return status !== 'FT' && status !== 'AET' && status !== 'PEN';
+});
+
+const finishedFiltered = filtered.filter((f: any) => {
+  const status = f.fixture?.status?.short;
+  return status === 'FT' || status === 'AET' || status === 'PEN';
+});
+
+// Cache any finished matches we found
+if (finishedFiltered.length > 0) {
+  console.log(`📝 Found ${finishedFiltered.length} recently finished matches, caching...`);
+  const finishedFormatted = this.formatMatches(finishedFiltered, 'finished');
+  for (const match of finishedFormatted) {
+    await this.storeFinishedMatch(match);
+  }
+}
+
+const formatted = this.formatMatches(liveFiltered, 'live');
         
         // Sort by league importance
         return this.sortByImportance(formatted).slice(0, 60);
@@ -270,7 +290,43 @@ class FootballAPI {
     
     return [];
   }
+  /**
+ * Get cached recent results (from previously live matches that finished)
+ */
+async getCachedRecentResults(limit: number = 8): Promise<Match[]> {
+  try {
+    const cached = await getCachedValueAsync<Match[]>('results:finished', 7 * 24 * 60 * 60 * 1000); // 7 days
+    if (cached && cached.length > 0) {
+      console.log(`📦 Retrieved ${cached.length} cached results`);
+      return cached.slice(0, limit);
+    }
+    return [];
+  } catch (error) {
+    console.error('Error getting cached results:', error);
+    return [];
+  }
+}
 
+/**
+ * Store finished match in results cache
+ */
+private async storeFinishedMatch(match: Match): Promise<void> {
+  try {
+    const cached = await getCachedValueAsync<Match[]>('results:finished', 7 * 24 * 60 * 60 * 1000) || [];
+    
+    // Check if already cached
+    const exists = cached.find(m => m.id === match.id);
+    if (exists) return;
+    
+    // Add to front of array (most recent first)
+    const updated = [match, ...cached].slice(0, 50); // Keep max 50
+    
+    await setCachedValue('results:finished', updated);
+    console.log(`✅ Stored finished match: ${match.home} ${match.score} ${match.away}`);
+  } catch (error) {
+    console.error('Error storing finished match:', error);
+  }
+}
   async getUpcomingMatches(): Promise<Match[]> {
     try {
       const startDate = new Date();
@@ -329,6 +385,99 @@ class FootballAPI {
       console.error('Error fetching upcoming matches:', error);
       return this.getMockUpcomingMatches();
     }
+  }
+
+  /**
+   * NEW: Get finished fixtures from the last N days
+   */
+async getFinishedFixtures(daysBack: number = 5): Promise<Match[]> {
+  try {
+    console.log(`🔍 Fetching last finished fixtures for major leagues`);
+    
+    const allFixtures: any[] = [];
+    
+    // Fetch from major leagues - get last 10 fixtures per league
+    const majorLeagues = [39, 140, 135, 78, 61, 2, 3, 848]; // PL, La Liga, Serie A, Bundesliga, Ligue 1, UCL, UEL, UECL
+    
+    for (const leagueId of majorLeagues) {
+      // Use 'last' parameter to get recent fixtures
+      const data = await this.fetch(`/fixtures?league=${leagueId}&last=10&season=2025`);
+      if (data?.response) {
+        console.log(`  📦 League ${leagueId}: ${data.response.length} recent fixtures`);
+        allFixtures.push(...data.response);
+      } else {
+        console.log(`  ❌ League ${leagueId}: No data`);
+      }
+    }
+    
+    console.log(`📊 Total fixtures fetched: ${allFixtures.length}`);
+    
+    if (allFixtures.length === 0) return [];
+    
+    // Filter to finished matches only
+    const finished = allFixtures.filter((f: any) => {
+      const statusShort = f.fixture?.status?.short;
+      return statusShort === 'FT' || statusShort === 'AET' || statusShort === 'PEN';
+    });
+    
+    console.log(`✅ Finished matches found: ${finished.length}`);
+    
+    // Apply strict filtering
+    const filtered = finished.filter((f: any) => {
+      const leagueName = f.league.name.toLowerCase();
+      const homeName = f.teams.home.name.toLowerCase();
+      const awayName = f.teams.away.name.toLowerCase();
+      
+      const hasBlockedKeyword = this.blockedKeywords.some(keyword =>
+        leagueName.includes(keyword) ||
+        homeName.includes(keyword) ||
+        awayName.includes(keyword)
+      );
+      
+      return !hasBlockedKeyword;
+    });
+    
+    console.log(`🎯 After filtering blocked keywords: ${filtered.length}`);
+
+// Log some sample dates to see what we're working with
+if (filtered.length > 0) {
+  console.log('📅 Sample match dates:');
+  filtered.slice(0, 5).forEach((f: any) => {
+    const matchDate = new Date(f.fixture.date);
+    console.log(`  - ${f.teams.home.name} vs ${f.teams.away.name}: ${matchDate.toISOString().split('T')[0]}`);
+  });
+}
+
+// Filter to only last 5 days
+const fiveDaysAgo = new Date();
+fiveDaysAgo.setDate(fiveDaysAgo.getDate() - daysBack);
+console.log(`🔍 Filtering for matches after: ${fiveDaysAgo.toISOString().split('T')[0]}`);
+
+const recentFiltered = filtered.filter((f: any) => {
+  const matchDate = new Date(f.fixture.date);
+  return matchDate >= fiveDaysAgo;
+});
+
+console.log(`📅 Matches from last ${daysBack} days: ${recentFiltered.length}`);
+    
+    const formatted = this.formatMatches(recentFiltered, 'finished');
+    
+    // Sort by most recent first
+    formatted.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+    
+    return formatted.slice(0, 20); // Return max 20
+  } catch (error) {
+    console.error('❌ Error fetching finished fixtures:', error);
+    return [];
+  }
+}
+
+  /**
+   * NEW: Get recent finished fixtures with limit
+   */
+  async getRecentFinishedFixtures(limit: number = 8): Promise<Match[]> {
+    const all = await this.getFinishedFixtures(5);
+    return all.slice(0, limit);
   }
 
   /**
@@ -629,61 +778,6 @@ class FootballAPI {
       }
     } catch (error) {
       console.error('Error fetching league upcoming matches:', error);
-    }
-    
-    return [];
-  }
-
-  /**
-   * NEW: Get recent finished matches across all leagues (last N days)
-   */
-  async getRecentFinishedMatches(days: number = 3): Promise<Match[]> {
-    try {
-      const endDate = new Date();
-      const startDate = new Date();
-      startDate.setDate(endDate.getDate() - days);
-      
-      const from = startDate.toISOString().split('T')[0];
-      const to = endDate.toISOString().split('T')[0];
-      
-      // Get finished matches from all allowed leagues
-      const allFixtures: any[] = [];
-      
-      // Fetch from major leagues only to avoid too many API calls
-      const majorLeagues = [39, 140, 135, 78, 61, 2, 3]; // PL, La Liga, Serie A, Bundesliga, Ligue 1, UCL, UEL
-      
-      for (const leagueId of majorLeagues) {
-        const data = await this.fetch(`/fixtures?league=${leagueId}&from=${from}&to=${to}&status=FT`);
-        if (data?.response) {
-          allFixtures.push(...data.response);
-        }
-      }
-      
-      if (allFixtures.length === 0) return [];
-      
-      // Apply strict filtering
-      const filtered = allFixtures.filter((f: any) => {
-        const leagueName = f.league.name.toLowerCase();
-        const homeName = f.teams.home.name.toLowerCase();
-        const awayName = f.teams.away.name.toLowerCase();
-        
-        const hasBlockedKeyword = this.blockedKeywords.some(keyword =>
-          leagueName.includes(keyword) ||
-          homeName.includes(keyword) ||
-          awayName.includes(keyword)
-        );
-        
-        return !hasBlockedKeyword;
-      });
-      
-      const formatted = this.formatMatches(filtered, 'finished');
-      
-      // Sort by most recent first
-      formatted.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-      
-      return this.sortByImportance(formatted).slice(0, 20);
-    } catch (error) {
-      console.error('Error fetching recent finished matches:', error);
     }
     
     return [];
