@@ -1,5 +1,6 @@
 // services/matchDetailService.ts
 // Detailed match information including player stats, injuries, predictions
+import { getOrFetchCached } from './cacheService';
 
 
 export interface PlayerDetail {
@@ -101,6 +102,9 @@ export interface MatchStats {
   saves: { home: number; away: number };
 }
 
+const MATCH_DETAIL_TTL_MS = 20 * 60 * 1000;
+const PLAYER_STATS_TTL_MS = 6 * 60 * 60 * 1000;
+
 class MatchDetailService {
   private baseURL = 'https://v3.football.api-sports.io';
   private apiKey = '7ee562287b3c02ee8426736fd81d032a';
@@ -155,7 +159,9 @@ class MatchDetailService {
    */
   async getPlayerMatchStats(fixtureId: number, playerId: number): Promise<PlayerMatchStats | null> {
     try {
-      const data = await this.fetch(`/fixtures/players?fixture=${fixtureId}`);
+      const data = await getOrFetchCached<any>(`fixture:players:${fixtureId}`, PLAYER_STATS_TTL_MS, () =>
+        this.fetch(`/fixtures/players?fixture=${fixtureId}`)
+      );
       
       if (data?.response) {
         // Find the player in the response
@@ -271,7 +277,9 @@ class MatchDetailService {
    */
   async getMatchStats(fixtureId: number): Promise<MatchStats | null> {
     try {
-      const data = await this.fetch(`/fixtures/statistics?fixture=${fixtureId}`);
+      const data = await getOrFetchCached<any>(`fixture:stats:${fixtureId}`, MATCH_DETAIL_TTL_MS, () =>
+        this.fetch(`/fixtures/statistics?fixture=${fixtureId}`)
+      );
       
       if (data?.response && data.response.length >= 2) {
         const homeStats = data.response[0].statistics;

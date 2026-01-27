@@ -1,4 +1,4 @@
-// app/(tabs)/index.tsx
+﻿// app/(tabs)/index.tsx
 // Home Screen - Production Quality - PL App Style
 // Features: Correct match times, full-image hero news, working notifications, RESULTS SECTION
 // UPDATED: Added debugging logs and college sports filter
@@ -6,16 +6,24 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { addDoc, collection, deleteDoc, getDocs, query, where } from 'firebase/firestore';
-import { useEffect, useState } from 'react';
-import { Alert, Dimensions, Image, RefreshControl, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { useEffect, useMemo, useState } from 'react';
+import { Alert, Dimensions, FlatList, Image, RefreshControl, SectionList, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useAuth } from '../../context/AuthContext';
 import { db } from '../../firebaseConfig';
 import { footballAPI, Match } from '../../services/footballApi';
+import { getCachedValueAsync } from '../../services/cacheService';
 import { newsAPI, NewsArticle } from '../../services/newsApi';
 import { useOpenArticle } from '../../hooks/useOpenArticle';
 
 
 const { width } = Dimensions.get('window');
+
+const LIVE_CACHE_KEY = 'matches:live';
+const UPCOMING_CACHE_KEY = 'matches:upcoming:7d';
+const RESULTS_CACHE_KEY = 'matches:finished:5d';
+const LIVE_TTL_MS = 20 * 1000;
+const UPCOMING_TTL_MS = 10 * 60 * 1000;
+const RESULTS_TTL_MS = 30 * 60 * 1000;
 
 interface LiveMatch {
   id: string;
@@ -29,6 +37,7 @@ interface LiveMatch {
   minute: string;
   league: string;
   activeUsers: string;
+  date: string;
 }
 
 interface UpcomingMatch {
@@ -69,6 +78,7 @@ const TEST_LIVE_MATCH: LiveMatch = {
   minute: "67'",
   league: 'Premier League',
   activeUsers: '12.5K',
+  date: new Date().toISOString(),
 };
 
 // Upcoming matches with realistic times
@@ -176,12 +186,21 @@ export default function HomeScreen() {
   const { openArticle, prefetchArticle } = useOpenArticle();
   const { userProfile } = useAuth();
   const [refreshing, setRefreshing] = useState(false);
-  const [liveMatches, setLiveMatches] = useState<LiveMatch[]>([]);
-  const [upcomingMatches, setUpcomingMatches] = useState<UpcomingMatch[]>([]);
-  const [resultsMatches, setResultsMatches] = useState<ResultMatch[]>([]);
-  const [news, setNews] = useState<NewsArticle[]>([]);
+  const [homeData, setHomeData] = useState<{
+    liveMatches: LiveMatch[];
+    upcomingMatches: UpcomingMatch[];
+    resultsMatches: ResultMatch[];
+    news: NewsArticle[];
+  }>({
+    liveMatches: [],
+    upcomingMatches: [],
+    resultsMatches: [],
+    news: [],
+  });
   const [subscribedMatches, setSubscribedMatches] = useState<Set<string>>(new Set());
   const [loadingNotify, setLoadingNotify] = useState<string | null>(null);
+  const { liveMatches, upcomingMatches, resultsMatches, news } = homeData;
+  const [nowTs, setNowTs] = useState(Date.now());
 
   useEffect(() => {
     loadData();
@@ -193,92 +212,122 @@ export default function HomeScreen() {
     }
   }, [userProfile]);
 
-  const loadData = async () => {
+  useEffect(() => {
+    const interval = setInterval(() => setNowTs(Date.now()), 60000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const mapLiveMatches = (liveData: Match[]): LiveMatch[] => {
+    const liveSource = liveData.filter(match => match.status === 'live');
+    const live = liveSource.length > 0 ? liveSource.map(m => ({
+      id: m.id.toString(),
+      home: m.home,
+      away: m.away,
+      homeIcon: m.homeLogo,
+      awayIcon: m.awayLogo,
+      homeLogo: m.homeLogo,
+      awayLogo: m.awayLogo,
+      score: m.score || '0-0',
+      minute: m.minute || "0'",
+      league: m.league,
+      activeUsers: `${(m.activeUsers || 0) / 1000}K`,
+      date: m.date
+    })) : [TEST_LIVE_MATCH];
+    
+    live.sort((a, b) => {
+      const parseUsers = (s: string) => parseFloat(s.replace('K','')) * 1000;
+      return parseUsers(b.activeUsers || '0') - parseUsers(a.activeUsers || '0');
+    });
+    
+    return live;
+  };
+
+  const mapUpcomingMatches = (upcomingData: Match[]): UpcomingMatch[] => (
+    upcomingData.length > 0 ? upcomingData.map(m => ({
+      id: m.id.toString(),
+      home: m.home,
+      away: m.away,
+      homeIcon: m.homeLogo,
+      awayIcon: m.awayLogo,
+      homeLogo: m.homeLogo,
+      awayLogo: m.awayLogo,
+      league: m.league,
+      kickoff: m.time || 'TBD',
+      kickoffFull: new Date(m.date).toLocaleString(),
+      kickoffTime: new Date(m.date),
+      venue: 'Stadium TBD'
+    })) : SAMPLE_UPCOMING
+  );
+
+  const mapResultsMatches = (resultsData: Match[]): ResultMatch[] => (
+    resultsData.map(m => ({
+      id: m.id.toString(),
+      home: m.home,
+      away: m.away,
+      homeLogo: m.homeLogo,
+      awayLogo: m.awayLogo,
+      score: m.score || '0-0',
+      league: m.league,
+      date: m.date
+    }))
+  );
+
+  const buildMatchState = (liveData: Match[], upcomingData: Match[], resultsData: Match[]) => ({
+    liveMatches: mapLiveMatches(liveData),
+    upcomingMatches: mapUpcomingMatches(upcomingData),
+    resultsMatches: mapResultsMatches(resultsData),
+  });
+
+  const getChatWindow = (kickoff: Date) => {
+    const opensAt = new Date(kickoff.getTime() - 45 * 60000);
+    const closesAt = new Date(kickoff.getTime() + 130 * 60000);
+    return { opensAt, closesAt };
+  };
+
+  const getMatchRoute = (kickoff: Date, matchId: string) => {
+    const { opensAt, closesAt } = getChatWindow(kickoff);
+    if (nowTs < opensAt.getTime()) return `/matchPreview/${matchId}`;
+    if (nowTs > closesAt.getTime()) return `/results/${matchId}`;
+    return `/chat/${matchId}`;
+  };
+
+  const loadData = async ({ preferCache = true }: { preferCache?: boolean } = {}) => {
     try {
-      console.log('🔄 Loading data...');
-      
-      // Load real data from API
-      const liveData = await footballAPI.getLiveMatches();
-      const upcomingData = await footballAPI.getUpcomingMatches();
-      
-      console.log('📊 Fetching results...');
-      const resultsData = await footballAPI.getRecentFinishedFixtures(8);
-      console.log('✅ RESULTS:', resultsData.length, 'matches');
-      if (resultsData.length > 0) {
-        console.log('First result:', resultsData[0]);
-      } else {
-        console.log('⚠️ No results data returned from API');
+      if (__DEV__) {
+        console.log('🔄 Loading data...');
       }
-      
-      // Use real data if available, fallback to samples
-      let live = liveData.length > 0 ? liveData.map(m => ({
-        id: m.id.toString(),
-        home: m.home,
-        away: m.away,
-        homeIcon: m.homeLogo,
-        awayIcon: m.awayLogo,
-        homeLogo: m.homeLogo,
-        awayLogo: m.awayLogo,
-        score: m.score || '0-0',
-        minute: m.minute || "0'",
-        league: m.league,
-        activeUsers: `${(m.activeUsers || 0) / 1000}K`
-      })) : [TEST_LIVE_MATCH];
-      
-      // Sort by active users
-      live.sort((a, b) => {
-        const parseUsers = (s: string) => parseFloat(s.replace('K','')) * 1000;
-        return parseUsers(b.activeUsers || '0') - parseUsers(a.activeUsers || '0');
+
+      if (preferCache) {
+        const [cachedLive, cachedUpcoming, cachedResults] = await Promise.all([
+          getCachedValueAsync<Match[]>(LIVE_CACHE_KEY, LIVE_TTL_MS),
+          getCachedValueAsync<Match[]>(UPCOMING_CACHE_KEY, UPCOMING_TTL_MS),
+          getCachedValueAsync<Match[]>(RESULTS_CACHE_KEY, RESULTS_TTL_MS),
+        ]);
+
+        if (cachedLive || cachedUpcoming || cachedResults) {
+          setHomeData((prev) => ({
+            ...prev,
+            ...buildMatchState(cachedLive || [], cachedUpcoming || [], cachedResults || []),
+          }));
+        }
+      }
+
+      const newsPromise = newsAPI.getSoccerNews().catch((error) => {
+        console.error('Error loading news:', error);
+        return [] as NewsArticle[];
       });
-      
-      setLiveMatches(live);
-      
-      setUpcomingMatches(upcomingData.length > 0 ? upcomingData.map(m => ({
-        id: m.id.toString(),
-        home: m.home,
-        away: m.away,
-        homeIcon: m.homeLogo,
-        awayIcon: m.awayLogo,
-        homeLogo: m.homeLogo,
-        awayLogo: m.awayLogo,
-        league: m.league,
-        kickoff: m.time || 'TBD',
-        kickoffFull: new Date(m.date).toLocaleString(),
-        kickoffTime: new Date(m.date),
-        venue: 'Stadium TBD'
-      })) : SAMPLE_UPCOMING);
 
-      // Map results data
-      const mappedResults = resultsData.map(m => ({
-        id: m.id.toString(),
-        home: m.home,
-        away: m.away,
-        homeLogo: m.homeLogo,
-        awayLogo: m.awayLogo,
-        score: m.score || '0-0',
-        league: m.league,
-        date: m.date
-      }));
-      
-      console.log('📝 Setting results state:', mappedResults.length, 'matches');
-      setResultsMatches(mappedResults);
-      
-    } catch (error) {
-      console.error('❌ Error loading data:', error);
-      // Fallback to sample data on error
-      setLiveMatches([TEST_LIVE_MATCH]);
-      setUpcomingMatches(SAMPLE_UPCOMING);
-      setResultsMatches([]); // Empty on error
-    }
+      const [liveData, upcomingData, resultsData, newsData] = await Promise.all([
+        footballAPI.getLiveMatches(),
+        footballAPI.getUpcomingMatches(),
+        footballAPI.getRecentFinishedFixtures(8),
+        newsPromise,
+      ]);
 
-    try {
-      const newsData = await newsAPI.getSoccerNews();
-      
       // FILTER OUT COLLEGE SPORTS
       const filteredNews = newsData.filter(article => {
         const text = `${article.title} ${article.description || ''}`.toLowerCase();
         
-        // Block college sports
         const isCollegeSports = 
           text.includes('college football') || 
           text.includes('hoosiers') ||
@@ -289,20 +338,32 @@ export default function HomeScreen() {
           text.includes('college playoff') ||
           text.includes('bowl game');
         
-        if (isCollegeSports) {
+        if (isCollegeSports && __DEV__) {
           console.log('🚫 Blocked college article:', article.title.substring(0, 50));
         }
         
         return !isCollegeSports;
       });
+
+      if (__DEV__) {
+        console.log(`📰 News: ${filteredNews.length} articles (filtered ${newsData.length - filteredNews.length} college)`);
+      }
+
+      setHomeData({
+        ...buildMatchState(liveData, upcomingData, resultsData),
+        news: filteredNews.slice(0, 6),
+      });
       
-      console.log(`📰 News: ${filteredNews.length} articles (filtered ${newsData.length - filteredNews.length} college)`);
-      setNews(filteredNews.slice(0, 6));
+      if (__DEV__) {
+        console.log('✅ Data loading complete');
+      }
     } catch (error) {
-      console.error('Error loading news:', error);
+      console.error('❌ Error loading data:', error);
+      setHomeData((prev) => ({
+        ...prev,
+        ...buildMatchState([], [], []),
+      }));
     }
-    
-    console.log('✅ Data loading complete');
   };
 
   // Helper function
@@ -398,7 +459,7 @@ export default function HomeScreen() {
 
   const onRefresh = async () => {
     setRefreshing(true);
-    await loadData();
+    await loadData({ preferCache: false });
     if (userProfile?.uid) {
       await loadSubscriptions();
     }
@@ -433,7 +494,11 @@ export default function HomeScreen() {
     <TouchableOpacity
       key={match.id}
       style={styles.liveMatchCard}
-      onPress={() => router.push(`/chat/${match.id}` as any)}
+      onPress={() => {
+        const kickoff = new Date(match.date);
+        const route = getMatchRoute(kickoff, match.id);
+        router.push(route as any);
+      }}
       activeOpacity={0.85}
     >
       <View style={styles.liveMatchHeader}>
@@ -496,7 +561,10 @@ export default function HomeScreen() {
       <TouchableOpacity 
         key={match.id} 
         style={styles.upcomingCard}
-        onPress={() => router.push(`/matchPreview/${match.id}` as any)}
+        onPress={() => {
+          const route = getMatchRoute(match.kickoffTime, match.id);
+          router.push(route as any);
+        }}
         activeOpacity={0.7}
       >
         <View style={styles.upcomingHeader}>
@@ -658,6 +726,160 @@ export default function HomeScreen() {
     </TouchableOpacity>
   );
 
+  const liveMatchesTop = useMemo(() => liveMatches.slice(0, 8), [liveMatches]);
+  const upcomingMatchesTop = useMemo(() => upcomingMatches.slice(0, 8), [upcomingMatches]);
+  const heroArticle = useMemo(() => news[0], [news]);
+  const newsList = useMemo(() => news.slice(1, 12), [news]);
+
+  const sections = useMemo(() => {
+    const next: { key: string; data: { key: string }[] }[] = [];
+    if (liveMatchesTop.length > 0) {
+      next.push({ key: 'live', data: [{ key: 'live' }] });
+    }
+    next.push({ key: 'upcoming', data: [{ key: 'upcoming' }] });
+    next.push({ key: 'results', data: [{ key: 'results' }] });
+    next.push({ key: 'news', data: [{ key: 'news' }] });
+    return next;
+  }, [liveMatchesTop.length, upcomingMatchesTop.length, resultsMatches.length, newsList.length, heroArticle]);
+
+  const renderSectionItem = ({ section }: { section: { key: string } }) => {
+    switch (section.key) {
+      case 'live':
+        return (
+          <View style={styles.section}>
+            <View style={styles.sectionHeader}>
+              <View style={styles.sectionTitleRow}>
+                <View style={styles.liveIndicator} />
+                <Text style={styles.sectionTitle}>Live Now</Text>
+              </View>
+              <TouchableOpacity onPress={() => router.push('/live' as any)}>
+                <Text style={styles.seeAllText}>See All</Text>
+              </TouchableOpacity>
+            </View>
+            
+            <FlatList
+              horizontal
+              data={liveMatchesTop}
+              renderItem={({ item }) => renderLiveMatch(item)}
+              keyExtractor={(item) => item.id}
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.horizontalScroll}
+              initialNumToRender={4}
+              windowSize={5}
+              maxToRenderPerBatch={6}
+              updateCellsBatchingPeriod={50}
+              removeClippedSubviews
+            />
+          </View>
+        );
+      case 'upcoming':
+        return (
+          <View style={styles.section}>
+            <View style={styles.sectionHeader}>
+              <Text style={styles.sectionTitle}>Upcoming</Text>
+              <TouchableOpacity onPress={() => router.push('/upcoming' as any)}>
+                <Text style={styles.seeAllText}>See All ({upcomingMatches.length})</Text>
+              </TouchableOpacity>
+            </View>
+
+            <FlatList
+              horizontal
+              data={upcomingMatchesTop}
+              renderItem={({ item }) => renderUpcomingMatch(item)}
+              keyExtractor={(item) => item.id}
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.horizontalScroll}
+              initialNumToRender={4}
+              windowSize={5}
+              maxToRenderPerBatch={6}
+              updateCellsBatchingPeriod={50}
+              removeClippedSubviews
+            />
+          </View>
+        );
+      case 'results':
+        return (
+          <View style={styles.section}>
+            <View style={styles.sectionHeader}>
+              <Text style={styles.sectionTitle}>Results ({resultsMatches.length})</Text>
+              <TouchableOpacity onPress={() => {
+                if (__DEV__) {
+                  console.log('See All tapped, results count:', resultsMatches.length);
+                }
+                router.push('/results' as any);
+              }}>
+                <Text style={styles.seeAllText}>See All</Text>
+              </TouchableOpacity>
+            </View>
+
+            {resultsMatches.length === 0 ? (
+              <View style={{ padding: 20, alignItems: 'center', backgroundColor: '#FFF', marginHorizontal: 20, borderRadius: 12 }}>
+                <Text style={{ fontSize: 14, color: '#666', marginBottom: 10 }}>
+                  No results available
+                </Text>
+                <Text style={{ fontSize: 12, color: '#999', marginBottom: 10 }}>
+                  Check console for errors
+                </Text>
+                <TouchableOpacity 
+                  onPress={() => {
+                    if (__DEV__) {
+                      console.log('Retrying data load...');
+                    }
+                    loadData({ preferCache: false });
+                  }}
+                  style={{ marginTop: 10, padding: 10, backgroundColor: '#0066CC', borderRadius: 8 }}
+                >
+                  <Text style={{ color: '#FFF', fontWeight: '600' }}>Retry</Text>
+                </TouchableOpacity>
+              </View>
+            ) : (
+              <FlatList
+                horizontal
+                data={resultsMatches}
+                renderItem={({ item }) => renderResultMatch(item)}
+                keyExtractor={(item) => item.id}
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={styles.horizontalScroll}
+                initialNumToRender={4}
+                windowSize={5}
+                maxToRenderPerBatch={6}
+                updateCellsBatchingPeriod={50}
+                removeClippedSubviews
+              />
+            )}
+          </View>
+        );
+      default:
+        return (
+          <View style={styles.section}>
+            <View style={styles.sectionHeader}>
+              <Text style={styles.sectionTitle}>Latest News</Text>
+              <TouchableOpacity onPress={() => router.push('/explore?filter=news' as any)}>
+                <Text style={styles.seeAllText}>View All</Text>
+              </TouchableOpacity>
+            </View>
+
+            <View style={styles.newsContainer}>
+              {heroArticle && renderHeroNews(heroArticle)}
+              <View style={styles.newsListSection}>
+                <FlatList
+                  data={newsList}
+                  renderItem={({ item }) => renderNewsListItem(item)}
+                  keyExtractor={(item) => item.id}
+                  scrollEnabled={false}
+                  initialNumToRender={6}
+                  windowSize={5}
+                  maxToRenderPerBatch={8}
+                  updateCellsBatchingPeriod={50}
+                  removeClippedSubviews
+                />
+              </View>
+            </View>
+          </View>
+        );
+    }
+  };
+
   return (
     <View style={styles.container}>
       {/* Header */}
@@ -673,112 +895,20 @@ export default function HomeScreen() {
         </TouchableOpacity>
       </View>
 
-      <ScrollView
+      <SectionList
+        sections={sections}
+        keyExtractor={(item) => item.key}
+        renderItem={renderSectionItem}
         style={styles.content}
         showsVerticalScrollIndicator={false}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
-      >
-        {/* Live Now Section */}
-        {liveMatches.length > 0 && (
-          <View style={styles.section}>
-            <View style={styles.sectionHeader}>
-              <View style={styles.sectionTitleRow}>
-                <View style={styles.liveIndicator} />
-                <Text style={styles.sectionTitle}>Live Now</Text>
-              </View>
-              <TouchableOpacity onPress={() => router.push('/live' as any)}>
-                <Text style={styles.seeAllText}>See All</Text>
-              </TouchableOpacity>
-            </View>
-            
-            <ScrollView 
-              horizontal 
-              showsHorizontalScrollIndicator={false}
-              contentContainerStyle={styles.horizontalScroll}
-            >
-              {liveMatches.slice(0, 8).map((match) => renderLiveMatch(match))}
-            </ScrollView>
-          </View>
-        )}
-
-        {/* Upcoming Section */}
-        <View style={styles.section}>
-          <View style={styles.sectionHeader}>
-            <Text style={styles.sectionTitle}>Upcoming</Text>
-            <TouchableOpacity onPress={() => router.push('/upcoming' as any)}>
-              <Text style={styles.seeAllText}>See All ({upcomingMatches.length})</Text>
-            </TouchableOpacity>
-          </View>
-
-          <ScrollView 
-            horizontal 
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={styles.horizontalScroll}
-          >
-            {upcomingMatches.slice(0, 8).map((match) => renderUpcomingMatch(match))}
-          </ScrollView>
-        </View>
-
-        {/* Results Section - ALWAYS VISIBLE FOR DEBUGGING */}
-        <View style={styles.section}>
-          <View style={styles.sectionHeader}>
-            <Text style={styles.sectionTitle}>Results ({resultsMatches.length})</Text>
-            <TouchableOpacity onPress={() => {
-              console.log('See All tapped, results count:', resultsMatches.length);
-              router.push('/results' as any);
-            }}>
-              <Text style={styles.seeAllText}>See All</Text>
-            </TouchableOpacity>
-          </View>
-
-          {resultsMatches.length === 0 ? (
-            <View style={{ padding: 20, alignItems: 'center', backgroundColor: '#FFF', marginHorizontal: 20, borderRadius: 12 }}>
-              <Text style={{ fontSize: 14, color: '#666', marginBottom: 10 }}>
-                No results available
-              </Text>
-              <Text style={{ fontSize: 12, color: '#999', marginBottom: 10 }}>
-                Check console for errors
-              </Text>
-              <TouchableOpacity 
-                onPress={() => {
-                  console.log('Retrying data load...');
-                  loadData();
-                }}
-                style={{ marginTop: 10, padding: 10, backgroundColor: '#0066CC', borderRadius: 8 }}
-              >
-                <Text style={{ color: '#FFF', fontWeight: '600' }}>Retry</Text>
-              </TouchableOpacity>
-            </View>
-          ) : (
-            <ScrollView 
-              horizontal 
-              showsHorizontalScrollIndicator={false}
-              contentContainerStyle={styles.horizontalScroll}
-            >
-              {resultsMatches.map((match) => renderResultMatch(match))}
-            </ScrollView>
-          )}
-        </View>
-
-        {/* News Section */}
-        <View style={styles.section}>
-          <View style={styles.sectionHeader}>
-            <Text style={styles.sectionTitle}>Latest News</Text>
-            <TouchableOpacity onPress={() => router.push('/explore?filter=news' as any)}>
-              <Text style={styles.seeAllText}>View All</Text>
-            </TouchableOpacity>
-          </View>
-
-          <View style={styles.newsContainer}>
-            {news[0] && renderHeroNews(news[0])}
-            <View style={styles.newsListSection}>
-              {news.slice(1, 12).map((article) => renderNewsListItem(article))}
-            </View>
-          </View>
-        </View>
-
-        <View style={{ height: 40 }} />
-      </ScrollView>
+        initialNumToRender={4}
+        windowSize={7}
+        maxToRenderPerBatch={6}
+        updateCellsBatchingPeriod={50}
+        removeClippedSubviews
+        ListFooterComponent={<View style={{ height: 40 }} />}
+      />
     </View>
   );
 }
@@ -1235,5 +1365,6 @@ const styles = StyleSheet.create({
     backgroundColor: '#F5F5F7',
   },
 });
+
 
 

@@ -1,8 +1,21 @@
 import { Ionicons } from '@expo/vector-icons';
 import { Tabs } from 'expo-router';
 import { communityService } from '../../services/communityService';
+import { footballAPI } from '../../services/footballApi';
+import { newsAPI } from '../../services/newsApi';
 
 export default function TabLayout() {
+  const prefetchHomeData = () => {
+    void footballAPI.getLiveMatches();
+    void footballAPI.getUpcomingMatches();
+    void footballAPI.getRecentFinishedFixtures(8);
+    void newsAPI.getSoccerNews();
+  };
+
+  const prefetchNewsPage = () => {
+    void newsAPI.getSoccerNewsPage(1, 20);
+  };
+
   return (
     <Tabs
       screenOptions={{
@@ -36,6 +49,11 @@ export default function TabLayout() {
             />
           ),
         }}
+        listeners={{
+          tabPress: () => {
+            prefetchHomeData();
+          },
+        }}
       />
       <Tabs.Screen
         name="explore"
@@ -50,7 +68,7 @@ export default function TabLayout() {
           ),
         }}
         listeners={{
-          tabPress: () => communityService.prefetchCommunities(),
+          tabPress: () => prefetchNewsPage(),
         }}
       />
       <Tabs.Screen

@@ -81,14 +81,18 @@ class ChatAccessController {
     away: string;
     date: string;
     status: 'live' | 'upcoming' | 'finished';
+    endedAt?: Date | null;
   }): ChatAccessConfig {
     const matchDate = new Date(match.date);
     const now = new Date();
 
     // Don't enable chat for finished matches (except for 10 min after)
     if (match.status === 'finished') {
-      const tenMinutesAfter = new Date(matchDate.getTime() + 120 * 60000); // 120 min match + 10 min
-      if (now > tenMinutesAfter) {
+      const fallbackClose = new Date(matchDate.getTime() + 130 * 60000);
+      const closeAt = match.endedAt
+        ? new Date(match.endedAt.getTime() + 10 * 60000)
+        : fallbackClose;
+      if (now > closeAt) {
         return {
           isChatEnabled: false,
           opensAt: null,
@@ -100,27 +104,27 @@ class ChatAccessController {
 
     // Check if it's a top league match
     if (this.isTopLeague(match.league)) {
-      return this.calculateChatTiming(matchDate, match.status, 'Top league match');
+      return this.calculateChatTiming(matchDate, match.status, 'Top league match', match.endedAt);
     }
 
     // Check if it's a major tournament
     if (this.isMajorTournament(match.league)) {
-      return this.calculateChatTiming(matchDate, match.status, 'Major tournament');
+      return this.calculateChatTiming(matchDate, match.status, 'Major tournament', match.endedAt);
     }
 
     // Check if it involves a priority team
     if (this.hasPriorityTeam(match.home, match.away)) {
-      return this.calculateChatTiming(matchDate, match.status, 'Priority team');
+      return this.calculateChatTiming(matchDate, match.status, 'Priority team', match.endedAt);
     }
 
     // Check if it's a classic rivalry
     if (this.isRivalry(match.home, match.away)) {
-      return this.calculateChatTiming(matchDate, match.status, 'Classic rivalry');
+      return this.calculateChatTiming(matchDate, match.status, 'Classic rivalry', match.endedAt);
     }
 
     // For other matches (Ligue 1, MLS, etc.), only enable if high profile
     if (this.isHighProfileMatch(match)) {
-      return this.calculateChatTiming(matchDate, match.status, 'High profile match');
+      return this.calculateChatTiming(matchDate, match.status, 'High profile match', match.endedAt);
     }
 
     // Default: no chat
@@ -138,15 +142,19 @@ class ChatAccessController {
   private calculateChatTiming(
     matchDate: Date,
     status: string,
-    reason: string
+    reason: string,
+    endedAt?: Date | null
   ): ChatAccessConfig {
     const now = new Date();
     
     // Chat opens 45 minutes before kickoff
     const opensAt = new Date(matchDate.getTime() - 45 * 60000);
     
-    // Chat closes 10 minutes after match end (assume 120 min for match duration)
-    const closesAt = new Date(matchDate.getTime() + 130 * 60000);
+    // Chat closes 10 minutes after match end when known, otherwise fallback to kickoff + 130m
+    const isEnded = status === 'finished';
+    const closesAt = isEnded && endedAt
+      ? new Date(endedAt.getTime() + 10 * 60000)
+      : new Date(matchDate.getTime() + 130 * 60000);
 
     // Check if we're in the chat window
     const isChatEnabled = now >= opensAt && now <= closesAt;

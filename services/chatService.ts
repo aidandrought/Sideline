@@ -1,8 +1,19 @@
-﻿// services/chatService.ts
-// Real chat service with match minute tracking
-// Real live games = EMPTY chat (users communicate)
-// Demo game only = Mock messages (for testing)
-// Match minute shown next to username (67')
+// services/chatService.ts
+// Firebase-backed realtime chat service
+
+import {
+  DataSnapshot,
+  limitToLast,
+  onValue,
+  orderByChild,
+  push,
+  query,
+  ref,
+  runTransaction,
+  serverTimestamp,
+  set,
+} from 'firebase/database';
+import { realtimeDb } from '../firebaseConfig';
 
 export interface ChatMessage {
   id: string;
@@ -10,7 +21,7 @@ export interface ChatMessage {
   username: string;
   text: string;
   timestamp: number;
-  matchMinute?: number; // NEW: Game minute when message sent (e.g., 67)
+  matchMinute?: number; // Game minute when message sent (e.g., 67)
   reactions: {
     [emoji: string]: {
       count: number;
@@ -25,67 +36,38 @@ export interface ChatMessage {
   type?: 'user' | 'system';
 }
 
-// Demo match ID (only this one gets mock messages)
-const DEMO_MATCH_ID = 'demo_999999';
+const normalizeSnapshot = (snapshot: DataSnapshot): ChatMessage[] => {
+  const raw = snapshot.val() || {};
+  return Object.entries(raw).map(([id, value]) => {
+    const msg = value as any;
+    const ts = typeof msg.timestamp === 'number' ? msg.timestamp : Date.now();
+    return {
+      id,
+      userId: msg.userId || 'unknown',
+      username: msg.username || 'Unknown',
+      text: msg.text || '',
+      timestamp: ts,
+      matchMinute: msg.matchMinute,
+      reactions: msg.reactions || {},
+      replyTo: msg.replyTo,
+      type: msg.type || 'user',
+    } as ChatMessage;
+  }).sort((a, b) => a.timestamp - b.timestamp);
+};
 
 export class ChatService {
-  private chatRooms: { [matchId: string]: ChatMessage[] } = {};
-
   subscribeToChat(matchId: string, callback: (messages: ChatMessage[]) => void) {
-    // Initialize chat room if doesn't exist
-    if (!this.chatRooms[matchId]) {
-      // ONLY add mock messages for demo match
-      if (matchId === DEMO_MATCH_ID) {
-        console.log('Loading DEMO chat with mock messages');
-        this.chatRooms[matchId] = [
-          {
-            id: '1',
-            userId: 'user1',
-            username: 'SoccerFan92',
-            text: 'Great match so far! 🔥',
-            timestamp: Date.now() - 300000,
-            matchMinute: 23, // Message sent at 23'
-            reactions: {
-              '❤️': { count: 5, userIds: ['user1', 'user2'] },
-              '👏': { count: 3, userIds: ['user3'] }
-            },
-            type: 'user'
-          },
-          {
-            id: '2',
-            type: 'system',
-            text: '⚽ GOAL! Salah scores!',
-            timestamp: Date.now() - 180000,
-            matchMinute: 23,
-            userId: 'system',
-            username: 'System',
-            reactions: {}
-          },
-          {
-            id: '3',
-            userId: 'user2',
-            username: 'FootballFanatic',
-            text: 'What a goal! Best team in the world!',
-            timestamp: Date.now() - 120000,
-            matchMinute: 24,
-            reactions: { '❤️': { count: 2, userIds: ['user2'] } },
-            type: 'user'
-          }
-        ];
-      } else {
-        // Real live game - START WITH EMPTY CHAT
-        console.log('Starting REAL chat for match:', matchId);
-        this.chatRooms[matchId] = [];
-      }
-    }
+    const messagesRef = query(
+      ref(realtimeDb, `chats/${matchId}/messages`),
+      orderByChild('timestamp'),
+      limitToLast(200)
+    );
 
-    // Send current messages to callback
-    callback(this.chatRooms[matchId]);
+    const unsubscribe = onValue(messagesRef, (snapshot) => {
+      callback(normalizeSnapshot(snapshot));
+    });
 
-    // Return unsubscribe function
-    return () => {
-      console.log('Unsubscribed from chat:', matchId);
-    };
+    return () => unsubscribe();
   }
 
   async sendMessage(
@@ -94,95 +76,90 @@ export class ChatService {
     username: string,
     text: string,
     replyTo?: ChatMessage['replyTo'],
-    matchMinute?: number // NEW: Pass current game minute
+    matchMinute?: number
   ) {
-    const newMessage: ChatMessage = {
-      id: Date.now().toString(),
+    const messagesRef = ref(realtimeDb, `chats/${matchId}/messages`);
+    const newRef = push(messagesRef);
+    const payload = {
+      userId,
+      username,
+      text,
+      timestamp: serverTimestamp(),
+      matchMinute,
+      reactions: {},
+      replyTo: replyTo || null,
+      type: 'user',
+    };
+    await set(newRef, payload);
+    return {
+      id: newRef.key || '',
       userId,
       username,
       text,
       timestamp: Date.now(),
-      matchMinute, // Store the game minute (e.g., 67)
+      matchMinute,
       reactions: {},
       replyTo,
-      type: 'user'
-    };
-
-    if (!this.chatRooms[matchId]) {
-      this.chatRooms[matchId] = [];
-    }
-
-    this.chatRooms[matchId].push(newMessage);
-    console.log(`Message sent at ${matchMinute}'`, newMessage);
-    
-    return newMessage;
+      type: 'user',
+    } as ChatMessage;
   }
 
   async toggleReaction(matchId: string, messageId: string, emoji: string, userId: string) {
-    if (!this.chatRooms[matchId]) return;
+    const messageRef = ref(realtimeDb, `chats/${matchId}/messages/${messageId}`);
+    await runTransaction(messageRef, (current) => {
+      if (!current) return current;
+      const reactions = current.reactions || {};
+      const existing = reactions[emoji] || { count: 0, userIds: [] as string[] };
+      const userIds = Array.isArray(existing.userIds) ? existing.userIds : [];
+      const hasReacted = userIds.includes(userId);
+      const nextUserIds = hasReacted ? userIds.filter(id => id !== userId) : [...userIds, userId];
 
-    const message = this.chatRooms[matchId].find(m => m.id === messageId);
-    if (!message) return;
-
-    if (!message.reactions[emoji]) {
-      message.reactions[emoji] = { count: 0, userIds: [] };
-    }
-
-    const userIds = message.reactions[emoji].userIds;
-    const hasReacted = userIds.includes(userId);
-
-    if (hasReacted) {
-      // Remove reaction
-      message.reactions[emoji].userIds = userIds.filter(u => u !== userId);
-      message.reactions[emoji].count = message.reactions[emoji].userIds.length;
-      
-      // Delete emoji key if count is 0
-      if (message.reactions[emoji].count === 0) {
-        delete message.reactions[emoji];
+      if (nextUserIds.length === 0) {
+        delete reactions[emoji];
+      } else {
+        reactions[emoji] = { count: nextUserIds.length, userIds: nextUserIds };
       }
-    } else {
-      // Add reaction
-      message.reactions[emoji].userIds.push(userId);
-      message.reactions[emoji].count = message.reactions[emoji].userIds.length;
-    }
+
+      return { ...current, reactions };
+    });
   }
 
   async sendSystemMessage(matchId: string, text: string, matchMinute?: number) {
-    const systemMessage: ChatMessage = {
-      id: Date.now().toString(),
-      type: 'system',
-      text,
+    const messagesRef = ref(realtimeDb, `chats/${matchId}/messages`);
+    const newRef = push(messagesRef);
+    const payload = {
       userId: 'system',
       username: 'System',
+      text,
+      timestamp: serverTimestamp(),
+      matchMinute,
+      reactions: {},
+      type: 'system',
+    };
+    await set(newRef, payload);
+    return {
+      id: newRef.key || '',
+      userId: 'system',
+      username: 'System',
+      text,
       timestamp: Date.now(),
       matchMinute,
-      reactions: {}
-    };
-
-    if (!this.chatRooms[matchId]) {
-      this.chatRooms[matchId] = [];
-    }
-
-    this.chatRooms[matchId].push(systemMessage);
-    return systemMessage;
+      reactions: {},
+      type: 'system',
+    } as ChatMessage;
   }
 
-  // Check if chat is open (45 min before to 10 min after game)
   isChatOpen(matchStartTime: number, matchStatus: string): boolean {
     const now = Date.now();
-    const minutesBeforeStart = 45 * 60 * 1000; // 45 minutes in ms
-    const minutesAfterEnd = 10 * 60 * 1000; // 10 minutes in ms
-    
-    // Chat opens 45 min before match
+    const minutesBeforeStart = 45 * 60 * 1000;
+    const minutesAfterEnd = 10 * 60 * 1000;
     const chatOpenTime = matchStartTime - minutesBeforeStart;
-    
-    // If match is finished, close chat 10 min after
+
     if (matchStatus === 'FT' || matchStatus === 'AET' || matchStatus === 'PEN') {
       const chatCloseTime = now - minutesAfterEnd;
       return now >= chatOpenTime && now <= chatCloseTime;
     }
-    
-    // If match is live or upcoming, chat is open
+
     return now >= chatOpenTime;
   }
 }

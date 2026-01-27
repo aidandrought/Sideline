@@ -27,6 +27,7 @@ import {
 } from 'react-native';
 import { shadow } from '../../components/styleUtils';
 import { footballAPI } from '../../services/footballApi';
+import { getMatchEndedAt, setMatchEndedAt } from '../../services/cacheService';
 import { useAuth } from '../../context/AuthContext';
 import { chatService, ChatMessage } from '../../services/chatService';
 import { EMOJI_REACTIONS } from '../../services/chatReactions';
@@ -46,6 +47,7 @@ interface MatchData {
   awayTeamId: number;
   homeLogo?: string;
   awayLogo?: string;
+  kickoffAt?: string;
 }
 
 interface Stats {
@@ -161,6 +163,24 @@ const getEventMinuteValue = (event: any) => {
   const elapsed = event?.time?.elapsed || 0;
   const extra = event?.time?.extra || 0;
   return elapsed + extra / 100;
+};
+
+const getEventIcon = (type: PlayByPlayEventType) => {
+  switch (type) {
+    case 'GOAL': return 'football';
+    case 'PENALTY': return 'alert-circle';
+    case 'YELLOW_CARD': return 'warning';
+    case 'RED_CARD': return 'close-circle';
+    case 'SUBSTITUTION': return 'swap-horizontal';
+    case 'CORNER': return 'flag';
+    case 'SHOT_ON_TARGET': return 'flash';
+    case 'SHOT_OFF_TARGET': return 'arrow-forward-circle';
+    case 'SAVE': return 'hand-left';
+    case 'OFFSIDE': return 'walk';
+    case 'FOUL': return 'alert-circle';
+    case 'VAR': return 'search';
+    default: return 'radio-button-on';
+  }
 };
 
 const applySubstitutions = (
@@ -407,23 +427,7 @@ const buildPlayByPlayEvents = (rawEvents: any[], matchData: MatchData): PlayByPl
       type: normalizedType,
       title: getEventTitle(normalizedType),
       description: '',
-      icon: (() => {
-        switch (normalizedType) {
-          case 'GOAL': return 'football';
-          case 'PENALTY': return 'alert-circle';
-          case 'YELLOW_CARD': return 'warning';
-          case 'RED_CARD': return 'close-circle';
-          case 'SUBSTITUTION': return 'swap-horizontal';
-          case 'CORNER': return 'flag';
-          case 'SHOT_ON_TARGET': return 'flash';
-          case 'SHOT_OFF_TARGET': return 'arrow-forward-circle';
-          case 'SAVE': return 'hand-left';
-          case 'OFFSIDE': return 'walk';
-          case 'FOUL': return 'alert-circle';
-          case 'VAR': return 'search';
-          default: return 'radio-button-on';
-        }
-      })(),
+      icon: getEventIcon(normalizedType),
       details,
     };
 
@@ -475,6 +479,10 @@ export default function LiveMatchChat() {
     const fixtureId = Array.isArray(id) ? id[0] : id;
     return fixtureId ? `match:${fixtureId}` : 'match:unknown';
   }, [id]);
+  const fixtureId = useMemo(() => {
+    const rawId = Array.isArray(id) ? id[0] : id;
+    return rawId ? Number(rawId) : NaN;
+  }, [id]);
   
   // START WITH CHAT TAB
   const [activeTab, setActiveTab] = useState<TabType>('chat');
@@ -488,6 +496,10 @@ export default function LiveMatchChat() {
   const [error, setError] = useState<string | null>(null);
   const [lastUpdatedAt, setLastUpdatedAt] = useState<number | null>(null);
   const [rawEvents, setRawEvents] = useState<any[]>([]);
+  const [kickoffAt, setKickoffAt] = useState<Date | null>(null);
+  const [endedAt, setEndedAtState] = useState<Date | null>(null);
+  const [statusShort, setStatusShort] = useState<string | null>(null);
+  const [nowTs, setNowTs] = useState(Date.now());
   
   // REAL FIREBASE CHAT STATE
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -499,11 +511,24 @@ export default function LiveMatchChat() {
   const [currentMatchMinute, setCurrentMatchMinute] = useState(0);
   const playByPlayListRef = useRef<FlatList<PlayByPlayEvent>>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const prevStatsRef = useRef<Stats | null>(null);
+  const syntheticEventsRef = useRef<PlayByPlayEvent[]>([]);
+  const syntheticEventIdsRef = useRef<Set<string>>(new Set());
 
   const isLiveStatus = (statusShort?: string) => {
     const liveStates = new Set(['1H', '2H', 'ET', 'HT', 'LIVE']);
     return statusShort ? liveStates.has(statusShort) : false;
   };
+
+  const isEndedStatus = (status?: string | null) => {
+    const endedStates = new Set(['FT', 'AET', 'PEN']);
+    return status ? endedStates.has(status) : false;
+  };
+
+  useEffect(() => {
+    const interval = setInterval(() => setNowTs(Date.now()), 30000);
+    return () => clearInterval(interval);
+  }, []);
 
   const mapStats = (statsResponse: any[]) => {
     if (!statsResponse || statsResponse.length < 2) return null;
@@ -567,6 +592,89 @@ export default function LiveMatchChat() {
     };
   };
 
+  const appendSyntheticEvents = (
+    prev: Stats | null,
+    next: Stats | null,
+    minute: number,
+    matchInfo: MatchData
+  ) => {
+    if (!prev || !next) return;
+    const deltas: Array<{ key: keyof Stats; type: PlayByPlayEventType }> = [
+      { key: 'shots', type: 'SHOT' },
+      { key: 'shotsOnTarget', type: 'SHOT_ON_TARGET' },
+      { key: 'corners', type: 'CORNER' },
+      { key: 'fouls', type: 'FOUL' },
+      { key: 'offsides', type: 'OFFSIDE' },
+    ];
+
+    deltas.forEach(({ key, type }) => {
+      (['home', 'away'] as const).forEach(side => {
+        const prevVal = prev[key][side] ?? 0;
+        const nextVal = next[key][side] ?? 0;
+        if (nextVal <= prevVal) return;
+        for (let count = prevVal + 1; count <= nextVal; count += 1) {
+          const id = `synthetic:${type}:${side}:${count}`;
+          if (syntheticEventIdsRef.current.has(id)) continue;
+          syntheticEventIdsRef.current.add(id);
+          const event: PlayByPlayEvent = {
+            id,
+            minute: minute || 0,
+            timestamp: Date.now(),
+            team: side,
+            type,
+            title: getEventTitle(type),
+            description: '',
+            icon: getEventIcon(type),
+            details: {},
+          };
+          event.description = formatEventDescription(event, matchInfo);
+          syntheticEventsRef.current.push(event);
+        }
+      });
+    });
+  };
+
+  const sortPlayByPlayEvents = (events: PlayByPlayEvent[]) => {
+    return events.slice().sort((a, b) => {
+      if (a.minute !== b.minute) return a.minute - b.minute;
+      const extraA = a.extraMinute || 0;
+      const extraB = b.extraMinute || 0;
+      if (extraA !== extraB) return extraA - extraB;
+      const timeA = typeof a.timestamp === 'number' ? a.timestamp : 0;
+      const timeB = typeof b.timestamp === 'number' ? b.timestamp : 0;
+      return timeA - timeB;
+    });
+  };
+
+  const chatTiming = useMemo(() => {
+    if (!kickoffAt) {
+      return { opensAt: null as Date | null, closesAt: null as Date | null };
+    }
+    const opensAt = new Date(kickoffAt.getTime() - 45 * 60000);
+    const closesAt = isEndedStatus(statusShort)
+      ? (endedAt ? new Date(endedAt.getTime() + 10 * 60000) : new Date(kickoffAt.getTime() + 130 * 60000))
+      : new Date(kickoffAt.getTime() + 130 * 60000);
+    return { opensAt, closesAt };
+  }, [kickoffAt, endedAt, statusShort]);
+
+  const isChatNotOpen = chatTiming.opensAt ? nowTs < chatTiming.opensAt.getTime() : false;
+  const isChatClosed = chatTiming.closesAt ? nowTs > chatTiming.closesAt.getTime() : false;
+  const isChatEnabled = !isChatNotOpen && !isChatClosed;
+  const chatBannerText = isChatNotOpen
+    ? 'Chat opens 45 minutes before kickoff'
+    : isChatClosed
+      ? 'Chat closed'
+      : null;
+
+  useEffect(() => {
+    if (!chatTiming.closesAt || Number.isNaN(fixtureId)) return;
+    if (nowTs <= chatTiming.closesAt.getTime()) return;
+    const timeout = setTimeout(() => {
+      router.push(`/results/${fixtureId}` as any);
+    }, 1200);
+    return () => clearTimeout(timeout);
+  }, [chatTiming.closesAt, fixtureId, nowTs]);
+
   const fetchLiveData = async () => {
     if (!id) {
       setError('No match ID provided');
@@ -574,7 +682,6 @@ export default function LiveMatchChat() {
       return;
     }
 
-    const fixtureId = Number(id);
     if (Number.isNaN(fixtureId)) {
       setError('Invalid match ID');
       setLoading(false);
@@ -594,8 +701,18 @@ export default function LiveMatchChat() {
       }
 
       const fixture = liveData.fixture;
-      const statusShort = fixture.fixture?.status?.short;
+      const nextStatusShort = fixture.fixture?.status?.short || null;
       const elapsed = fixture.fixture?.status?.elapsed || 0;
+      const kickoffValue = fixture.fixture?.date ? new Date(fixture.fixture.date) : null;
+      const ended = isEndedStatus(nextStatusShort);
+      const cachedEndedAt = await getMatchEndedAt(fixtureId);
+      let resolvedEndedAt = cachedEndedAt;
+
+      if (ended && !cachedEndedAt) {
+        const now = new Date();
+        await setMatchEndedAt(fixtureId, now);
+        resolvedEndedAt = now;
+      }
 
       const mappedMatch: MatchData = {
         id: fixture.fixture.id,
@@ -604,17 +721,22 @@ export default function LiveMatchChat() {
         away: fixture.teams.away.name,
         homeScore: fixture.goals.home || 0,
         awayScore: fixture.goals.away || 0,
-        minute: elapsed ? `${elapsed}'` : statusShort,
+        minute: elapsed ? `${elapsed}'` : nextStatusShort || '',
         status: fixture.fixture?.status?.long,
         homeTeamId: fixture.teams.home.id,
         awayTeamId: fixture.teams.away.id,
         homeLogo: fixture.teams.home.logo,
         awayLogo: fixture.teams.away.logo,
+        kickoffAt: kickoffValue ? kickoffValue.toISOString() : undefined,
       };
 
       setMatchData(mappedMatch);
       setCurrentMatchMinute(elapsed);
-      setStats(mapStats(liveData.statistics));
+      setKickoffAt(kickoffValue);
+      setStatusShort(nextStatusShort);
+      setEndedAtState(resolvedEndedAt);
+      const nextStats = mapStats(liveData.statistics);
+      setStats(nextStats);
       setLineups(mapLineups(liveData.lineups));
       
       // LOG WHAT API RETURNS
@@ -622,9 +744,13 @@ export default function LiveMatchChat() {
       console.log('Event types:', liveData.events.map((e: any) => e.time?.elapsed + ' ' + e.type + ' - ' + e.detail));
       
       setRawEvents(liveData.events || []);
-      setPlayByPlayEvents(
-        liveData.events.length > 0 ? buildPlayByPlayEvents(liveData.events, mappedMatch) : []
-      );
+      const baseEvents = liveData.events.length > 0 ? buildPlayByPlayEvents(liveData.events, mappedMatch) : [];
+      if (nextStats) {
+        appendSyntheticEvents(prevStatsRef.current, nextStats, elapsed, mappedMatch);
+        prevStatsRef.current = nextStats;
+      }
+      const combinedEvents = sortPlayByPlayEvents([...baseEvents, ...syntheticEventsRef.current]);
+      setPlayByPlayEvents(combinedEvents);
       setLastUpdatedAt(Date.now());
       setLoading(false);
 
@@ -633,7 +759,7 @@ export default function LiveMatchChat() {
         pollRef.current = null;
       }
 
-      if (isLiveStatus(statusShort)) {
+      if (isLiveStatus(nextStatusShort) && !ended) {
         pollRef.current = setInterval(() => {
           fetchLiveData();
         }, 15000);
@@ -757,7 +883,7 @@ export default function LiveMatchChat() {
   };
 
   const handleSend = async () => {
-    if (!messageText.trim() || !userProfile) return;
+    if (!isChatEnabled || !messageText.trim() || !userProfile) return;
     try {
       await chatService.sendMessage(
         chatRoomId,
@@ -1161,18 +1287,38 @@ export default function LiveMatchChat() {
 
         <View pointerEvents="none" style={styles.scoreBlock}>
           <Text style={styles.leagueText}>{matchData?.league}</Text>
-          <View style={styles.scoreRow}>
-            <Text numberOfLines={1} style={[styles.teamNameHeader, styles.teamNameLeft]}>
-              {matchData?.home}
-            </Text>
-            <View style={styles.scorePill}>
-              <Text style={styles.scorePillText}>{matchData?.homeScore ?? 0}</Text>
-              <Text style={styles.scoreDash}>-</Text>
-              <Text style={styles.scorePillText}>{matchData?.awayScore ?? 0}</Text>
+          <View style={styles.matchupRow}>
+            <View style={styles.matchupTeamLeft}>
+              <View style={styles.teamInnerLeft}>
+                {matchData?.homeLogo ? (
+                  <Image source={{ uri: matchData.homeLogo }} style={styles.teamLogoSmall} resizeMode="contain" />
+                ) : (
+                  <View style={styles.teamLogoPlaceholder} />
+                )}
+                <Text numberOfLines={1} style={[styles.teamNameHeader, styles.teamNameLeft]}>
+                  {matchData?.home}
+                </Text>
+              </View>
             </View>
-            <Text numberOfLines={1} style={[styles.teamNameHeader, styles.teamNameRight]}>
-              {matchData?.away}
-            </Text>
+            <View style={styles.centerPill}>
+              <View style={styles.scorePill}>
+                <Text style={styles.scorePillText}>{matchData?.homeScore ?? 0}</Text>
+                <Text style={styles.scoreDash}>-</Text>
+                <Text style={styles.scorePillText}>{matchData?.awayScore ?? 0}</Text>
+              </View>
+            </View>
+            <View style={styles.matchupTeamRight}>
+              <View style={styles.teamInnerRight}>
+                <Text numberOfLines={1} style={[styles.teamNameHeader, styles.teamNameRight]}>
+                  {matchData?.away}
+                </Text>
+                {matchData?.awayLogo ? (
+                  <Image source={{ uri: matchData.awayLogo }} style={styles.teamLogoSmall} resizeMode="contain" />
+                ) : (
+                  <View style={styles.teamLogoPlaceholder} />
+                )}
+              </View>
+            </View>
           </View>
           <View style={styles.minutePill}>
             <View style={styles.liveDot} />
@@ -1216,6 +1362,11 @@ export default function LiveMatchChat() {
           behavior={Platform.OS === 'ios' ? 'padding' : undefined}
           keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 0}
         >
+          {chatBannerText && (
+            <View style={styles.chatBanner}>
+              <Text style={styles.chatBannerText}>{chatBannerText}</Text>
+            </View>
+          )}
           <ScrollView
             ref={scrollViewRef}
             style={styles.chatContainer}
@@ -1257,16 +1408,17 @@ export default function LiveMatchChat() {
               value={messageText}
               onChangeText={setMessageText}
               multiline
+              editable={isChatEnabled}
             />
             <TouchableOpacity
               style={styles.sendButton}
               onPress={handleSend}
-              disabled={!messageText.trim()}
+              disabled={!isChatEnabled || !messageText.trim()}
             >
               <Ionicons
                 name="send"
                 size={20}
-                color={messageText.trim() ? '#0066CC' : '#5A5A5E'}
+                color={isChatEnabled && messageText.trim() ? '#0066CC' : '#5A5A5E'}
               />
             </TouchableOpacity>
           </View>
@@ -1410,25 +1562,62 @@ const styles = StyleSheet.create({
     color: '#999',
     marginBottom: 6,
   },
-  scoreRow: {
-  flexDirection: 'row',
-  alignItems: 'center',
-  justifyContent: 'center',
-  gap: 8,
-  width: '100%',
-},
-teamNameHeader: {
-  fontSize: 14,
-  fontWeight: '700',
-  color: '#FFF',
-  flex: 1,
-},
-teamNameLeft: {
-  textAlign: 'right',
-},
-teamNameRight: {
-  textAlign: 'left',
-},
+  teamNameHeader: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#FFF',
+    flexShrink: 1,
+    width: '100%',
+  },
+  teamNameLeft: {
+    textAlign: 'right',
+  },
+  teamNameRight: {
+    textAlign: 'left',
+  },
+  matchupRow: {
+    width: '100%',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  matchupTeamLeft: {
+    flex: 1,
+    alignItems: 'flex-end',
+  },
+  matchupTeamRight: {
+    flex: 1,
+    alignItems: 'flex-start',
+  },
+  teamInnerLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: 6,
+    maxWidth: '100%',
+  },
+  teamInnerRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-start',
+    gap: 6,
+    maxWidth: '100%',
+  },
+  teamLogoSmall: {
+    width: 20,
+    height: 20,
+  },
+  teamLogoPlaceholder: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: '#2C2C2E',
+  },
+  centerPill: {
+    width: 72,
+    alignItems: 'center',
+  },
 scorePill: {
   flexDirection: 'row',
   alignItems: 'center',
@@ -1516,6 +1705,18 @@ scorePill: {
   // Chat styles
   chatContainer: {
     flex: 1,
+  },
+  chatBanner: {
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    backgroundColor: '#2C2C2E',
+    borderBottomWidth: 1,
+    borderBottomColor: '#3C3C3E',
+  },
+  chatBannerText: {
+    fontSize: 13,
+    color: '#8E8E93',
+    textAlign: 'center',
   },
   chatContent: {
     padding: 16,
@@ -1807,7 +2008,7 @@ scorePill: {
     paddingVertical: 12,
     paddingHorizontal: 16,
     borderBottomWidth: 1,
-    borderBottomColor: '#2C2C2E',
+    borderBottomColor: '#5c5c7a',
     backgroundColor: '#1C1C1E',
   },
   goalRow: {

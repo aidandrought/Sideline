@@ -4,11 +4,15 @@
 import { Ionicons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
-import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Image, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { footballAPI, Match } from '../../services/footballApi';
-import { matchDetailService, TeamForm, TeamNews } from '../../services/matchDetailService';
+import { matchDetailService, TeamNews } from '../../services/matchDetailService';
 import { newsAPI, NewsArticle, RateLimitError } from '../../services/newsApi';
 import { useOpenArticle } from '../../hooks/useOpenArticle';
+import { getOrFetchCached } from '../../services/cacheService';
+
+const MATCH_NEWS_TTL_MS = 30 * 60 * 1000;
+const ACCENT = '#2B5BC7';
 
 interface NewsReaction {
   [articleId: string]: 'up' | 'down' | null;
@@ -19,17 +23,26 @@ export default function MatchPreviewScreen() {
   const { openArticle, prefetchArticle } = useOpenArticle();
   const { id } = useLocalSearchParams();
   const [match, setMatch] = useState<Match | null>(null);
-  const [homeForm, setHomeForm] = useState<TeamForm | null>(null);
-  const [awayForm, setAwayForm] = useState<TeamForm | null>(null);
+  const [homeRecentForm, setHomeRecentForm] = useState<('W' | 'D' | 'L')[] | null>(null);
+  const [awayRecentForm, setAwayRecentForm] = useState<('W' | 'D' | 'L')[] | null>(null);
   const [homeNews, setHomeNews] = useState<TeamNews | null>(null);
   const [awayNews, setAwayNews] = useState<TeamNews | null>(null);
   const [relatedNews, setRelatedNews] = useState<NewsArticle[]>([]);
   const [newsLoading, setNewsLoading] = useState(true);
-  const [newsUnavailable, setNewsUnavailable] = useState(false);
   const [newsErrorMessage, setNewsErrorMessage] = useState<string | null>(null);
   const [newsReactions, setNewsReactions] = useState<NewsReaction>({});
   const [loading, setLoading] = useState(true);
+  const [venueLabel, setVenueLabel] = useState('Venue TBD');
   const isLive = match?.status === 'live';
+  const matchQuery = match ? `"${match.home}" OR "${match.away}"` : '';
+
+  const handleBack = () => {
+    if (router.canGoBack()) {
+      router.back();
+    } else {
+      router.replace('/(tabs)/index');
+    }
+  };
 
   useEffect(() => {
     loadMatchData();
@@ -43,11 +56,10 @@ export default function MatchPreviewScreen() {
       
       if (foundMatch) {
         setMatch(foundMatch);
+        setVenueLabel(getVenueLabel(foundMatch));
 
         // Load team news and form (these would need team IDs in real implementation)
         // For now using mock data
-        setHomeForm(await matchDetailService.getTeamForm(0));
-        setAwayForm(await matchDetailService.getTeamForm(0));
         setHomeNews(await matchDetailService.getTeamNews(0));
         setAwayNews(await matchDetailService.getTeamNews(0));
 
@@ -55,18 +67,46 @@ export default function MatchPreviewScreen() {
         setNewsLoading(true);
         const teamA = foundMatch.home;
         const teamB = foundMatch.away;
+        const cacheKey = `news:match:${teamA.toLowerCase()}:${teamB.toLowerCase()}`;
 
-        const matchNewsResponse = await newsAPI.matchNews({
-          teamA,
-          teamB,
-          competition: foundMatch.league,
-          pageSize: 10
-        });
+        const matchNewsResponse = await getOrFetchCached(
+          cacheKey,
+          MATCH_NEWS_TTL_MS,
+          () => newsAPI.searchMatchNews({ teamA, teamB, limit: 5, page: 1 })
+        );
 
-        setRelatedNews(matchNewsResponse.articles);
-        setNewsUnavailable(matchNewsResponse.articles.length < 10);
-        setNewsErrorMessage(matchNewsResponse.isStale ? "News is temporarily rate-limited. Try again shortly." : null);
+        let combinedNews = dedupeArticles(matchNewsResponse);
+        if (combinedNews.length < 3 && foundMatch.league) {
+          const competitionKey = `news:competition:${foundMatch.league.toLowerCase()}`;
+          const competitionNewsResponse = await getOrFetchCached(
+            competitionKey,
+            MATCH_NEWS_TTL_MS,
+            async () => {
+              const response = await newsAPI.searchNewsQuery({ q: foundMatch.league, page: 1, pageSize: 10 });
+              return response.articles || [];
+            }
+          );
+          combinedNews = dedupeArticles([...combinedNews, ...competitionNewsResponse]);
+        }
+
+        setRelatedNews(combinedNews.slice(0, 5));
+        setNewsErrorMessage(null);
         setNewsLoading(false);
+
+        const [homeFixtures, awayFixtures] = await Promise.all([
+          foundMatch.homeId ? footballAPI.getTeamLastFixtures(foundMatch.homeId, 5) : Promise.resolve([]),
+          foundMatch.awayId ? footballAPI.getTeamLastFixtures(foundMatch.awayId, 5) : Promise.resolve([])
+        ]);
+
+        setHomeRecentForm(homeFixtures.length === 5 ? buildFormFromFixtures(homeFixtures, foundMatch.home) : null);
+        setAwayRecentForm(awayFixtures.length === 5 ? buildFormFromFixtures(awayFixtures, foundMatch.away) : null);
+
+        if (!foundMatch.venueName) {
+          const fixture = await footballAPI.getFixtureById(foundMatch.id);
+          if (fixture?.fixture?.venue) {
+            setVenueLabel(getVenueLabel({ venueName: fixture.fixture.venue.name, venueCity: fixture.fixture.venue.city }));
+          }
+        }
       }
     } catch (error) {
       if (error instanceof RateLimitError) {
@@ -99,20 +139,52 @@ export default function MatchPreviewScreen() {
     });
   };
 
-  const getFormEmoji = (result: 'W' | 'D' | 'L') => {
-    if (result === 'W') return '✅';
-    if (result === 'D') return '➖';
-    return '❌';
+  const buildFormFromFixtures = (
+    fixtures: { home: string; away: string; homeGoals?: number; awayGoals?: number }[],
+    teamName: string
+  ) => {
+    const normalizedTeam = teamName.toLowerCase();
+    const results = fixtures.map(fixture => {
+      const isHome = fixture.home.toLowerCase() === normalizedTeam;
+      const homeGoals = fixture.homeGoals ?? 0;
+      const awayGoals = fixture.awayGoals ?? 0;
+      const teamGoals = isHome ? homeGoals : awayGoals;
+      const oppGoals = isHome ? awayGoals : homeGoals;
+      if (teamGoals > oppGoals) return 'W';
+      if (teamGoals < oppGoals) return 'L';
+      return 'D';
+    });
+    return results.length === 5 ? results : null;
   };
+
+  const getArticleImage = (article: any) =>
+    article?.imageUrl || article?.urlToImage || article?.image || article?.thumbnail || '';
+
+  const getVenueLabel = (fixture: { venueName?: string; venueCity?: string } | null) => {
+    if (!fixture?.venueName) return 'Venue TBD';
+    if (fixture.venueCity) return `${fixture.venueName} \u2022 ${fixture.venueCity}`;
+    return fixture.venueName;
+  };
+
+  const dedupeArticles = (articles: NewsArticle[]) => {
+    const seen = new Set<string>();
+    return articles.filter(article => {
+      const key = (article.url || `${article.title}-${article.publishedAt}`).toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  };
+
 
   if (loading) {
   return (
       <View style={[styles.container, isLive && styles.containerLive]}>
         <View style={[styles.header, isLive && styles.headerLive]}>
-          <TouchableOpacity onPress={() => router.back()}>
+          <TouchableOpacity style={styles.backButton} onPress={handleBack}>
             <Ionicons name="chevron-back" size={28} color={isLive ? '#FFF' : '#000'} />
           </TouchableOpacity>
-          <Text style={[styles.headerTitle, isLive && styles.textLive]}>Match Preview</Text>
+          <Text style={[styles.headerTitle, styles.headerTitleCentered, isLive && styles.textLive]}>Match Preview</Text>
           <View style={{ width: 28 }} />
         </View>
         <View style={styles.loadingContainer}>
@@ -126,7 +198,7 @@ export default function MatchPreviewScreen() {
     return (
       <View style={[styles.container, isLive && styles.containerLive]}>
         <View style={[styles.header, isLive && styles.headerLive]}>
-          <TouchableOpacity onPress={() => router.back()}>
+          <TouchableOpacity style={styles.backButton} onPress={handleBack}>
             <Ionicons name="chevron-back" size={28} color={isLive ? '#FFF' : '#000'} />
           </TouchableOpacity>
         </View>
@@ -141,20 +213,55 @@ export default function MatchPreviewScreen() {
     <View style={[styles.container, isLive && styles.containerLive]}>
       {/* Header */}
       <View style={[styles.header, isLive && styles.headerLive]}>
-        <TouchableOpacity onPress={() => router.back()}>
+        <TouchableOpacity style={styles.backButton} onPress={handleBack}>
           <Ionicons name="chevron-back" size={28} color={isLive ? '#FFF' : '#000'} />
         </TouchableOpacity>
-        <Text style={[styles.headerTitle, isLive && styles.textLive]}>Match Preview</Text>
+        <Text style={[styles.headerTitle, styles.headerTitleCentered, isLive && styles.textLive]}>Match Preview</Text>
         <View style={{ width: 28 }} />
       </View>
 
       {/* Match Info Card */}
       <View style={[styles.matchCard, isLive && styles.cardLive]}>
+        <View style={[styles.matchCardAccent, isLive && styles.matchCardAccentLive]} />
         <Text style={[styles.league, isLive && styles.subTextLive]}>{match.league}</Text>
-        <View style={styles.teamsContainer}>
-          <Text style={[styles.team, isLive && styles.textLive]}>{match.home}</Text>
-          <Text style={[styles.vs, isLive && styles.textLive]}>VS</Text>
-          <Text style={[styles.team, isLive && styles.textLive]}>{match.away}</Text>
+        <View style={styles.matchupWrapper}>
+          <View style={styles.matchupRow}>
+            <View style={styles.teamColumnLeft}>
+              <View style={styles.leftTeamInner}>
+                {match.homeLogo ? (
+                  <Image source={{ uri: match.homeLogo, cache: 'force-cache' }} style={styles.teamCrest} resizeMode="contain" />
+                ) : (
+                  <View style={styles.teamCrestPlaceholder} />
+                )}
+                <View style={styles.teamNameWrap}>
+                  <Text style={[styles.teamName, styles.teamNameLeft, isLive && styles.textLive]} numberOfLines={1} ellipsizeMode="tail">
+                    {match.home}
+                  </Text>
+                </View>
+              </View>
+            </View>
+
+            <View style={styles.centerPillWrap}>
+              <View style={[styles.scorePill, isLive && styles.scorePillLive]}>
+                <Text style={[styles.scorePillText, isLive && styles.textLive]}>VS</Text>
+              </View>
+            </View>
+
+            <View style={styles.teamColumnRight}>
+              <View style={styles.rightTeamInner}>
+                <View style={styles.teamNameWrap}>
+                  <Text style={[styles.teamName, styles.teamNameRight, isLive && styles.textLive]} numberOfLines={1} ellipsizeMode="tail">
+                    {match.away}
+                  </Text>
+                </View>
+                {match.awayLogo ? (
+                  <Image source={{ uri: match.awayLogo, cache: 'force-cache' }} style={styles.teamCrest} resizeMode="contain" />
+                ) : (
+                  <View style={styles.teamCrestPlaceholder} />
+                )}
+              </View>
+            </View>
+          </View>
         </View>
         <View style={styles.kickoffInfo}>
           <Ionicons name="calendar" size={18} color="#FFD60A" />
@@ -162,44 +269,63 @@ export default function MatchPreviewScreen() {
         </View>
         <View style={styles.kickoffInfo}>
           <Ionicons name="location" size={18} color="#FFD60A" />
-          <Text style={[styles.kickoffText, isLive && styles.textLive]}>Stadium TBD</Text>
+          <Text style={[styles.kickoffText, isLive && styles.textLive]}>{venueLabel}</Text>
         </View>
       </View>
 
       <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
         {/* Team Form */}
-        <View style={styles.section}>
-          <Text style={[styles.sectionTitle, isLive && styles.textLive]}>Recent Form</Text>
-          
-          <View style={styles.formContainer}>
-            <View style={[styles.teamFormCard, isLive && styles.cardLive]}>
-              <Text style={[styles.teamFormName, isLive && styles.textLive]}>{match.home}</Text>
-              <View style={styles.formRow}>
-                {homeForm?.last5.map((result, idx) => (
-                  <View key={idx} style={styles.formBadge}>
-                    <Text style={styles.formEmoji}>{getFormEmoji(result.result)}</Text>
+        {(homeRecentForm || awayRecentForm) ? (
+          <View style={styles.section}>
+            <Text style={[styles.sectionTitle, isLive && styles.textLive]}>Recent Form</Text>
+            <View style={[styles.sectionDivider, isLive && styles.sectionDividerLive]} />
+            
+            <View style={styles.formContainer}>
+              {homeRecentForm && (
+                <View style={[styles.teamFormCard, isLive && styles.cardLive]}>
+                  <Text style={[styles.teamFormName, isLive && styles.textLive]}>{match.home}</Text>
+                  <View style={styles.formRow}>
+                    {homeRecentForm.map((result, idx) => (
+                      <View key={`${result}-${idx}`} style={[styles.formPill, styles[`formPill${result}` as const]]}>
+                        <Text style={styles.formPillText}>{result}</Text>
+                      </View>
+                    ))}
                   </View>
-                ))}
-              </View>
-            </View>
+                </View>
+              )}
 
-            <View style={[styles.teamFormCard, isLive && styles.cardLive]}>
-              <Text style={[styles.teamFormName, isLive && styles.textLive]}>{match.away}</Text>
-              <View style={styles.formRow}>
-                {awayForm?.last5.map((result, idx) => (
-                  <View key={idx} style={styles.formBadge}>
-                    <Text style={styles.formEmoji}>{getFormEmoji(result.result)}</Text>
+              {awayRecentForm && (
+                <View style={[styles.teamFormCard, isLive && styles.cardLive]}>
+                  <Text style={[styles.teamFormName, isLive && styles.textLive]}>{match.away}</Text>
+                  <View style={styles.formRow}>
+                    {awayRecentForm.map((result, idx) => (
+                      <View key={`${result}-${idx}`} style={[styles.formPill, styles[`formPill${result}` as const]]}>
+                        <Text style={styles.formPillText}>{result}</Text>
+                      </View>
+                    ))}
                   </View>
-                ))}
-              </View>
+                </View>
+              )}
             </View>
+            {(!homeRecentForm || !awayRecentForm) && (
+              <Text style={[styles.formUnavailable, isLive && styles.subTextLive]}>
+                Form unavailable{!homeRecentForm && !awayRecentForm ? '' : ` for ${!homeRecentForm ? match.home : match.away}`}
+              </Text>
+            )}
           </View>
-        </View>
+        ) : (
+          <View style={styles.section}>
+            <Text style={[styles.sectionTitle, isLive && styles.textLive]}>Recent Form</Text>
+            <View style={[styles.sectionDivider, isLive && styles.sectionDividerLive]} />
+            <Text style={[styles.formUnavailable, isLive && styles.subTextLive]}>Form unavailable</Text>
+          </View>
+        )}
 
         {/* Team News & Injuries */}
         {((homeNews?.injuries?.length ?? 0) > 0 || (awayNews?.injuries?.length ?? 0) > 0) && (
           <View style={styles.section}>
             <Text style={[styles.sectionTitle, isLive && styles.textLive]}>Team News</Text>
+            <View style={[styles.sectionDivider, isLive && styles.sectionDividerLive]} />
             
             {homeNews?.injuries && homeNews.injuries.length > 0 && (
               <View style={[styles.newsCard, isLive && styles.cardLive]}>
@@ -232,25 +358,45 @@ export default function MatchPreviewScreen() {
         )}
 
         {/* Related News */}
-        {(newsLoading || relatedNews.length > 0) && (
-          <View style={styles.section}>
-            <Text style={[styles.sectionTitle, isLive && styles.textLive]}>Latest News</Text>
+        <View style={styles.section}>
+            <View style={styles.newsTitleBlock}>
+              <View style={[styles.newsPill, isLive && styles.newsPillLive]}>
+                <Text style={[styles.newsPillText, isLive && styles.textLive]}>MATCH NEWS</Text>
+              </View>
+              <Text style={[styles.sectionTitle, isLive && styles.textLive]}>Latest News</Text>
+              <View style={[styles.sectionDivider, isLive && styles.sectionDividerLive]} />
+            </View>
 
             {newsLoading ? (
               <Text style={[styles.loadingText, isLive && styles.subTextLive]}>Loading news...</Text>
             ) : (
               <>
-                {relatedNews.map((article) => (
+                {relatedNews.slice(0, 5).map((article) => (
                   <View key={article.id} style={[styles.articleCard, isLive && styles.cardLive]}>
                     <TouchableOpacity
                       onPress={() => openArticle(article)}
                       onPressIn={() => prefetchArticle(article)}
                     >
-                      <Text style={[styles.articleTitle, isLive && styles.textLive]}>{article.title}</Text>
-                      <Text style={[styles.articleDescription, isLive && styles.subTextLive]} numberOfLines={2}>
-                        {article.description}
-                      </Text>
-                      <Text style={[styles.articleSource, isLive && styles.subTextLive]}>{article.source}</Text>
+                      <View style={styles.articleRow}>
+                        {getArticleImage(article) ? (
+                          <Image source={{ uri: getArticleImage(article), cache: 'force-cache' }} style={styles.articleThumb} resizeMode="cover" />
+                        ) : (
+                          <View style={styles.articleThumbPlaceholder}>
+                            <Ionicons name="image-outline" size={18} color="#9AA3AF" />
+                          </View>
+                        )}
+                        <View style={styles.articleTextCol}>
+                          <Text style={[styles.articleTitle, isLive && styles.textLive]} numberOfLines={2}>
+                            {article.title}
+                          </Text>
+                          <Text style={[styles.articleDescription, isLive && styles.subTextLive]} numberOfLines={2}>
+                            {article.description}
+                          </Text>
+                          <Text style={[styles.articleSource, isLive && styles.subTextLive]} numberOfLines={1}>
+                            {article.source}
+                          </Text>
+                        </View>
+                      </View>
                     </TouchableOpacity>
 
                     {/* Thumbs Up/Down */}
@@ -264,8 +410,8 @@ export default function MatchPreviewScreen() {
                       >
                         <Ionicons 
                           name="thumbs-up" 
-                          size={18} 
-                          color={newsReactions[article.id] === 'up' ? '#34C759' : '#666'} 
+                          size={14} 
+                          color={newsReactions[article.id] === 'up' ? '#2F9E5B' : '#9AA3AF'} 
                         />
                       </TouchableOpacity>
 
@@ -278,8 +424,8 @@ export default function MatchPreviewScreen() {
                       >
                         <Ionicons 
                           name="thumbs-down" 
-                          size={18} 
-                          color={newsReactions[article.id] === 'down' ? '#FF3B30' : '#666'} 
+                          size={14} 
+                          color={newsReactions[article.id] === 'down' ? '#D14343' : '#9AA3AF'} 
                         />
                       </TouchableOpacity>
                     </View>
@@ -287,10 +433,10 @@ export default function MatchPreviewScreen() {
                 ))}
                 {relatedNews.length > 0 && (
                   <TouchableOpacity
-                    style={[styles.loadMoreButton, isLive && styles.cardLive]}
-                    onPress={() => router.push({ pathname: '/(tabs)/explore', params: { initialTab: 'news', mode: 'news', q: `${match.home} ${match.away}` } } as any)}
+                    style={[styles.loadMoreButton, isLive && styles.loadMoreButtonLive]}
+                    onPress={() => router.push({ pathname: '/(tabs)/explore', params: { q: matchQuery } })}
                   >
-                    <Text style={[styles.loadMoreText, isLive && styles.textLive]}>Load more</Text>
+                    <Text style={[styles.loadMoreText, isLive && styles.textLive]}>See more news</Text>
                   </TouchableOpacity>
                 )}
                 {newsErrorMessage && (
@@ -298,23 +444,26 @@ export default function MatchPreviewScreen() {
                     News is temporarily rate-limited. Try again shortly.
                   </Text>
                 )}
-                {newsUnavailable && (
-                  <Text style={[styles.newsUnavailable, isLive && styles.subTextLive]}>
-                    More news not available
-                  </Text>
+                {!newsLoading && relatedNews.length === 0 && (
+                  <View style={[styles.emptyNewsCard, isLive && styles.cardLive]}>
+                    <Text style={[styles.emptyNewsText, isLive && styles.subTextLive]}>
+                      No recent news found for this matchup. Check back closer to kickoff.
+                    </Text>
+                  </View>
                 )}
               </>
             )}
           </View>
-        )}
 
-        <View style={{ height: 40 }} />
+        <View style={{ height: 28 }} />
       </ScrollView>
 
       {/* Chat Opens In... Banner */}
-      <View style={[styles.chatBanner, isLive && styles.cardLive]}>
-        <Ionicons name="time-outline" size={20} color="#0066CC" />
-        <Text style={[styles.chatBannerText, isLive && styles.textLive]}>Chat opens 45 minutes before kickoff</Text>
+      <View style={styles.chatBannerWrap}>
+        <View style={[styles.chatBanner, isLive && styles.cardLive]}>
+          <Ionicons name="time-outline" size={20} color={ACCENT} />
+          <Text style={[styles.chatBannerText, isLive && styles.textLive]}>Chat opens 45 minutes before kickoff</Text>
+        </View>
       </View>
     </View>
   );
@@ -333,11 +482,21 @@ const styles = StyleSheet.create({
     paddingTop: 60,
     paddingBottom: 15,
     backgroundColor: '#FFF',
+    position: 'relative',
+  },
+  backButton: {
+    zIndex: 20,
   },
   headerTitle: {
     fontSize: 18,
     fontWeight: '700',
     color: '#000',
+  },
+  headerTitleCentered: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    textAlign: 'center',
   },
   containerLive: {
     backgroundColor: '#0A0A0A',
@@ -365,32 +524,115 @@ const styles = StyleSheet.create({
   },
   matchCard: {
     backgroundColor: '#FFF',
-    margin: 20,
-    padding: 24,
+    margin: 16,
+    padding: 12,
     borderRadius: 16,
     alignItems: 'center',
+    overflow: 'hidden',
+  },
+  matchCardAccent: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    height: 3,
+    backgroundColor: ACCENT,
+  },
+  matchCardAccentLive: {
+    backgroundColor: '#2A3A52',
   },
   league: {
     fontSize: 14,
     fontWeight: '600',
     color: '#666',
-    marginBottom: 16,
+    marginBottom: 8,
+    textAlign: 'center',
   },
-  teamsContainer: {
+  matchupWrapper: {
+    alignSelf: 'center',
+    maxWidth: 420,
+    width: '86%',
+    marginBottom: 10,
+  },
+  matchupRow: {
+    flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: 20,
+    justifyContent: 'center',
+    gap: 8,
+    width: '100%',
   },
-  team: {
-    fontSize: 24,
-    fontWeight: '800',
+  teamColumnLeft: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'flex-end',
+  },
+  teamColumnRight: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'flex-start',
+  },
+  leftTeamInner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: 6,
+    maxWidth: '100%',
+  },
+  rightTeamInner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-start',
+    gap: 6,
+    maxWidth: '100%',
+  },
+  teamNameWrap: {
+    flex: 1,
+    width: '100%',
+  },
+  teamCrest: {
+    width: 22,
+    height: 22,
+  },
+  teamCrestPlaceholder: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: '#E5E7EB',
+  },
+  teamName: {
+    fontSize: 18,
+    fontWeight: '700',
     color: '#000',
-    marginVertical: 4,
+    flexShrink: 1,
+    width: '100%',
   },
-  vs: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: '#666',
-    marginVertical: 8,
+  teamNameLeft: {
+    textAlign: 'right',
+  },
+  teamNameRight: {
+    textAlign: 'left',
+  },
+  centerPillWrap: {
+    width: 72,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  scorePill: {
+    width: 72,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor: '#1F2933',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  scorePillLive: {
+    backgroundColor: '#1D2430',
+  },
+  scorePillText: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: '#FFF',
+    textAlign: 'center',
   },
   kickoffInfo: {
     flexDirection: 'row',
@@ -408,13 +650,27 @@ const styles = StyleSheet.create({
   },
   section: {
     paddingHorizontal: 20,
-    marginBottom: 24,
+    marginBottom: 16,
+  },
+  newsTitleBlock: {
+    gap: 6,
+    marginBottom: 6,
   },
   sectionTitle: {
     fontSize: 20,
     fontWeight: '800',
     color: '#000',
-    marginBottom: 16,
+    marginBottom: 0,
+  },
+  sectionDivider: {
+    height: 2,
+    width: 44,
+    backgroundColor: ACCENT,
+    borderRadius: 2,
+    marginBottom: 10,
+  },
+  sectionDividerLive: {
+    backgroundColor: '#2A3A52',
   },
   formContainer: {
     gap: 12,
@@ -422,27 +678,50 @@ const styles = StyleSheet.create({
   teamFormCard: {
     backgroundColor: '#FFF',
     borderRadius: 12,
-    padding: 16,
+    padding: 12,
   },
   teamFormName: {
     fontSize: 16,
     fontWeight: '700',
     color: '#000',
-    marginBottom: 12,
+    marginBottom: 8,
   },
   formRow: {
     flexDirection: 'row',
-    gap: 8,
+    gap: 6,
+    flexWrap: 'wrap',
   },
-  formBadge: {
-    backgroundColor: '#E5E7EB',
-    borderRadius: 8,
-    padding: 8,
-    minWidth: 40,
+  formPill: {
+    minWidth: 30,
+    paddingVertical: 5,
+    paddingHorizontal: 9,
+    borderRadius: 999,
     alignItems: 'center',
   },
-  formEmoji: {
-    fontSize: 18,
+  formPillText: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: '#1F2933',
+  },
+  formPillW: {
+    backgroundColor: '#E7F7ED',
+    borderWidth: 1,
+    borderColor: '#B8E6C6',
+  },
+  formPillD: {
+    backgroundColor: '#EEF4FF',
+    borderWidth: 1,
+    borderColor: '#C9D8F7',
+  },
+  formPillL: {
+    backgroundColor: '#FDECEC',
+    borderWidth: 1,
+    borderColor: '#F3C2C2',
+  },
+  formUnavailable: {
+    fontSize: 14,
+    color: '#666',
+    marginTop: 10,
   },
   newsCard: {
     backgroundColor: '#FFF',
@@ -470,63 +749,139 @@ const styles = StyleSheet.create({
     backgroundColor: '#FFF',
     borderRadius: 12,
     padding: 16,
-    marginBottom: 12,
+    marginBottom: 10,
+  },
+  articleRow: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  articleThumb: {
+    width: 88,
+    height: 66,
+    borderRadius: 10,
+    backgroundColor: '#E5E7EB',
+  },
+  articleThumbPlaceholder: {
+    width: 88,
+    height: 66,
+    borderRadius: 10,
+    backgroundColor: '#EEF0F3',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  articleTextCol: {
+    flex: 1,
   },
   articleTitle: {
     fontSize: 16,
     fontWeight: '700',
     color: '#000',
-    marginBottom: 8,
+    marginBottom: 4,
     lineHeight: 22,
   },
   articleDescription: {
     fontSize: 14,
     color: '#666',
-    marginBottom: 8,
+    marginBottom: 6,
     lineHeight: 20,
   },
   articleSource: {
     fontSize: 12,
     fontWeight: '600',
     color: '#0066CC',
-    marginBottom: 12,
+    marginBottom: 0,
   },
   articleActions: {
     flexDirection: 'row',
-    gap: 12,
-    paddingTop: 12,
+    justifyContent: 'flex-end',
+    gap: 8,
+    paddingTop: 8,
     borderTopWidth: 1,
-    borderTopColor: '#E5E7EB',
+    borderTopColor: '#EEF0F3',
   },
   newsUnavailable: {
     fontSize: 13,
     color: '#666',
     marginTop: 8,
   },
+  emptyNewsCard: {
+    backgroundColor: '#FFF',
+    borderRadius: 12,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: '#EEF0F3',
+  },
+  emptyNewsText: {
+    fontSize: 13,
+    color: '#666',
+    textAlign: 'center',
+  },
+  newsPill: {
+    alignSelf: 'flex-start',
+    backgroundColor: '#E8F1FF',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+  },
+  newsPillLive: {
+    backgroundColor: '#263246',
+  },
+  newsPillText: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: ACCENT,
+    letterSpacing: 0.4,
+  },
   thumbButton: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#2C2C2E',
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: 20,
+    backgroundColor: '#F3F4F6',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 16,
   },
   thumbButtonActive: {
-    backgroundColor: '#3C3C3E',
+    backgroundColor: '#E6EBF3',
+  },
+  loadMoreButton: {
+    alignSelf: 'flex-start',
+    marginTop: 4,
+    borderWidth: 1,
+    borderColor: ACCENT,
+    backgroundColor: '#EEF4FF',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 12,
+  },
+  loadMoreButtonLive: {
+    backgroundColor: '#1D2430',
+  },
+  loadMoreText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: ACCENT,
   },
   chatBanner: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: '#F0F7FF',
-    paddingVertical: 16,
+    paddingVertical: 12,
+    paddingHorizontal: 12,
     gap: 8,
+    maxWidth: 320,
   },
   chatBannerText: {
     fontSize: 14,
     fontWeight: '700',
-    color: '#0066CC',
+    color: ACCENT,
+    textAlign: 'center',
+  },
+  chatBannerWrap: {
+    width: '100%',
+    alignItems: 'center',
   },
 });
+
 
 

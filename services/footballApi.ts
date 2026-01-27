@@ -1,7 +1,7 @@
 // services/footballApi.ts
 // STRICT filtering - Only real top leagues, no youth/reserve teams
 // UPDATED: Added community generation methods, league standings, and finished fixtures
-import { getCachedValueAsync, setCachedValue } from './cacheService';
+import { getCachedValueAsync, getOrFetchCached, setCachedValue } from './cacheService';
 export interface Match {
   id: number;
   home: string;
@@ -18,6 +18,8 @@ export interface Match {
   homeId?: number;  // NEW: for community generation
   awayId?: number;  // NEW: for community generation
   leagueId?: number;  // NEW: for community generation
+  venueName?: string;
+  venueCity?: string;
 }
 
 export interface Lineup {
@@ -91,6 +93,8 @@ export interface FinishedMatch {
   home: string;
   away: string;
   score: string;
+  homeGoals?: number;
+  awayGoals?: number;
   league: string;
   date: string;
   homeLogo?: string;
@@ -104,6 +108,12 @@ export interface LiveFixtureResponse {
   statistics: any[];
   lineups: any[];
 }
+
+const LIVE_TTL_MS = 20 * 1000;
+const UPCOMING_TTL_MS = 10 * 60 * 1000;
+const RECENT_RESULTS_TTL_MS = 30 * 60 * 1000;
+const STANDINGS_TTL_MS = 6 * 60 * 60 * 1000;
+const MATCH_DETAIL_TTL_MS = 20 * 60 * 1000;
 
 class FootballAPI {
   private baseURL = 'https://v3.football.api-sports.io';
@@ -187,6 +197,10 @@ class FootballAPI {
     return null;
   }
 
+  private async fetchCached<T>(cacheKey: string, ttlMs: number, endpoint: string): Promise<T | null> {
+    return getOrFetchCached<T | null>(cacheKey, ttlMs, () => this.fetch(endpoint));
+  }
+
   private async getLeagueDetails(leagueId: number): Promise<LeagueCommunity | null> {
     const cached = this.leagueDetailsCache.get(leagueId);
     if (cached && cached.expiresAt > Date.now()) {
@@ -214,11 +228,14 @@ class FootballAPI {
   }
 
   async getLiveMatches(): Promise<Match[]> {
-    try {
-      const data = await this.fetch('/fixtures?live=all');
-      
-      if (data?.response && data.response.length > 0) {
-        console.log(`Found ${data.response.length} total live matches`);
+    return getOrFetchCached<Match[]>('matches:live', LIVE_TTL_MS, async () => {
+      try {
+        const data = await this.fetchCached<any>('fixtures:live:all', LIVE_TTL_MS, '/fixtures?live=all');
+        
+        if (data?.response && data.response.length > 0) {
+          if (__DEV__) {
+            console.log(`Found ${data.response.length} total live matches`);
+          }
         
         // STRICT filtering
         const filtered = data.response.filter((f: any) => {
@@ -247,14 +264,18 @@ class FootballAPI {
           );
           
           if (hasBlockedKeyword) {
-            console.log(`Blocked: ${f.league.name} - ${f.teams.home.name} vs ${f.teams.away.name}`);
+            if (__DEV__) {
+              console.log(`Blocked: ${f.league.name} - ${f.teams.home.name} vs ${f.teams.away.name}`);
+            }
             return false;
           }
           
           return true;
         });
         
-        console.log(`Filtered to ${filtered.length} matches from top leagues`);
+        if (__DEV__) {
+          console.log(`Filtered to ${filtered.length} matches from top leagues`);
+        }
         
         // Separate live and finished matches
 const liveFiltered = filtered.filter((f: any) => {
@@ -288,7 +309,8 @@ const formatted = this.formatMatches(liveFiltered, 'live');
       console.error('Error fetching live matches:', error);
     }
     
-    return [];
+      return [];
+    });
   }
   /**
  * Get cached recent results (from previously live matches that finished)
@@ -328,7 +350,8 @@ private async storeFinishedMatch(match: Match): Promise<void> {
   }
 }
   async getUpcomingMatches(): Promise<Match[]> {
-    try {
+    return getOrFetchCached<Match[]>('matches:upcoming:7d', UPCOMING_TTL_MS, async () => {
+      try {
       const startDate = new Date();
       const daysAhead = 7;
 
@@ -343,7 +366,7 @@ private async storeFinishedMatch(match: Match): Promise<void> {
       // Fetch each day individually
       const fixturesArray = await Promise.all(
         dateStrings.map(d =>
-          this.fetch(`/fixtures?date=${d}`)
+          this.fetchCached<any>(`fixtures:date:${d}`, UPCOMING_TTL_MS, `/fixtures?date=${d}`)
         )
       );
 
@@ -381,16 +404,18 @@ private async storeFinishedMatch(match: Match): Promise<void> {
       formatted.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
 
       return formatted.slice(0, 60);
-    } catch (error) {
-      console.error('Error fetching upcoming matches:', error);
-      return this.getMockUpcomingMatches();
-    }
+      } catch (error) {
+        console.error('Error fetching upcoming matches:', error);
+        return this.getMockUpcomingMatches();
+      }
+    });
   }
 
   /**
    * NEW: Get finished fixtures from the last N days
    */
 async getFinishedFixtures(daysBack: number = 5): Promise<Match[]> {
+  return getOrFetchCached<Match[]>(`matches:finished:${daysBack}d`, RECENT_RESULTS_TTL_MS, async () => {
   try {
     console.log(`🔍 Fetching last finished fixtures for major leagues`);
     
@@ -401,7 +426,7 @@ async getFinishedFixtures(daysBack: number = 5): Promise<Match[]> {
     
     for (const leagueId of majorLeagues) {
       // Use 'last' parameter to get recent fixtures
-      const data = await this.fetch(`/fixtures?league=${leagueId}&last=10&season=2025`);
+      const data = await this.fetchCached<any>(`fixtures:league:${leagueId}:last:10:season:2025`, RECENT_RESULTS_TTL_MS, `/fixtures?league=${leagueId}&last=10&season=2025`);
       if (data?.response) {
         console.log(`  📦 League ${leagueId}: ${data.response.length} recent fixtures`);
         allFixtures.push(...data.response);
@@ -470,6 +495,7 @@ console.log(`📅 Matches from last ${daysBack} days: ${recentFiltered.length}`)
     console.error('❌ Error fetching finished fixtures:', error);
     return [];
   }
+  });
 }
 
   /**
@@ -487,7 +513,8 @@ console.log(`📅 Matches from last ${daysBack} days: ${recentFiltered.length}`)
     teams: TeamCommunity[];
     leagues: LeagueCommunity[];
   }> {
-    try {
+    return getOrFetchCached<{ teams: TeamCommunity[]; leagues: LeagueCommunity[] }>('communities:from-matches', STANDINGS_TTL_MS, async () => {
+      try {
       if (__DEV__) {
         console.time('communities.matchesFetch');
       }
@@ -566,41 +593,44 @@ console.log(`📅 Matches from last ${daysBack} days: ${recentFiltered.length}`)
       console.error('Error getting communities from matches:', error);
       return { teams: [], leagues: [] };
     }
+    });
   }
 
   /**
    * NEW: Get league standings
    */
   async getLeagueStandings(leagueId: number, season: number = 2024): Promise<LeagueStanding[]> {
-    try {
-      const data = await this.fetch(`/standings?league=${leagueId}&season=${season}`);
-      
-      if (data?.response?.[0]?.league?.standings?.[0]) {
-        const standings = data.response[0].league.standings[0];
+    return getOrFetchCached<LeagueStanding[]>(`standings:league:${leagueId}:season:${season}`, STANDINGS_TTL_MS, async () => {
+      try {
+        const data = await this.fetchCached<any>(`standings:raw:${leagueId}:${season}`, STANDINGS_TTL_MS, `/standings?league=${leagueId}&season=${season}`);
         
-        return standings.map((s: any) => ({
-          rank: s.rank,
-          team: {
-            id: s.team.id,
-            name: s.team.name,
-            logo: s.team.logo
-          },
-          points: s.points,
-          goalsDiff: s.goalsDiff,
-          form: s.form,
-          played: s.all.played,
-          win: s.all.win,
-          draw: s.all.draw,
-          lose: s.all.lose,
-          goalsFor: s.all.goals.for,
-          goalsAgainst: s.all.goals.against
-        }));
+        if (data?.response?.[0]?.league?.standings?.[0]) {
+          const standings = data.response[0].league.standings[0];
+          
+          return standings.map((s: any) => ({
+            rank: s.rank,
+            team: {
+              id: s.team.id,
+              name: s.team.name,
+              logo: s.team.logo
+            },
+            points: s.points,
+            goalsDiff: s.goalsDiff,
+            form: s.form,
+            played: s.all.played,
+            win: s.all.win,
+            draw: s.all.draw,
+            lose: s.all.lose,
+            goalsFor: s.all.goals.for,
+            goalsAgainst: s.all.goals.against
+          }));
+        }
+      } catch (error) {
+        console.error('Error fetching league standings:', error);
       }
-    } catch (error) {
-      console.error('Error fetching league standings:', error);
-    }
-    
-    return [];
+      
+      return [];
+    });
   }
 
   private async getCurrentSeasonForLeague(leagueId: number): Promise<number> {
@@ -629,37 +659,39 @@ console.log(`📅 Matches from last ${daysBack} days: ${recentFiltered.length}`)
   async getLeagueStandingsByCurrentSeason(leagueId: number): Promise<LeagueStandingsResponse> {
     try {
       const season = await this.getCurrentSeasonForLeague(leagueId);
-      const data = await this.fetch(`/standings?league=${leagueId}&season=${season}`);
+      return await getOrFetchCached<LeagueStandingsResponse>(`standings:league:${leagueId}:season:${season}`, STANDINGS_TTL_MS, async () => {
+        const data = await this.fetchCached<any>(`standings:raw:${leagueId}:${season}`, STANDINGS_TTL_MS, `/standings?league=${leagueId}&season=${season}`);
 
-      const rawStandings = data?.response?.[0]?.league?.standings;
-      if (!rawStandings) {
-        return { leagueId, season, groups: [] };
-      }
+        const rawStandings = data?.response?.[0]?.league?.standings;
+        if (!rawStandings) {
+          return { leagueId, season, groups: [] };
+        }
 
-      const groups: LeagueStandingGroup[] = rawStandings.map((group: any[]) => {
-        const name = group?.[0]?.group || data?.response?.[0]?.league?.name || 'Standings';
-        const standings = group.map((s: any) => ({
-          rank: s.rank,
-          team: {
-            id: s.team.id,
-            name: s.team.name,
-            logo: s.team.logo
-          },
-          points: s.points,
-          goalsDiff: s.goalsDiff,
-          form: s.form,
-          played: s.all.played,
-          win: s.all.win,
-          draw: s.all.draw,
-          lose: s.all.lose,
-          goalsFor: s.all.goals.for,
-          goalsAgainst: s.all.goals.against
-        }));
+        const groups: LeagueStandingGroup[] = rawStandings.map((group: any[]) => {
+          const name = group?.[0]?.group || data?.response?.[0]?.league?.name || 'Standings';
+          const standings = group.map((s: any) => ({
+            rank: s.rank,
+            team: {
+              id: s.team.id,
+              name: s.team.name,
+              logo: s.team.logo
+            },
+            points: s.points,
+            goalsDiff: s.goalsDiff,
+            form: s.form,
+            played: s.all.played,
+            win: s.all.win,
+            draw: s.all.draw,
+            lose: s.all.lose,
+            goalsFor: s.all.goals.for,
+            goalsAgainst: s.all.goals.against
+          }));
 
-        return { name, standings };
+          return { name, standings };
+        });
+
+        return { leagueId, season, groups };
       });
-
-      return { leagueId, season, groups };
     } catch (error) {
       console.error('Error fetching league standings:', error);
       return { leagueId, season: null, groups: [] };
@@ -667,120 +699,177 @@ console.log(`📅 Matches from last ${daysBack} days: ${recentFiltered.length}`)
   }
 
   async getFixtureLive(fixtureId: number): Promise<LiveFixtureResponse> {
-    try {
-      const [fixtureData, eventsData, statsData, lineupsData] = await Promise.all([
-        this.fetch(`/fixtures?id=${fixtureId}`),
-        this.fetch(`/fixtures/events?fixture=${fixtureId}`),
-        this.fetch(`/fixtures/statistics?fixture=${fixtureId}`),
-        this.fetch(`/fixtures/lineups?fixture=${fixtureId}`),
-      ]);
+    return getOrFetchCached<LiveFixtureResponse>(`fixture:live:${fixtureId}`, LIVE_TTL_MS, async () => {
+      try {
+        const [fixtureData, eventsData, statsData, lineupsData] = await Promise.all([
+          this.fetchCached<any>(`fixture:${fixtureId}:base`, LIVE_TTL_MS, `/fixtures?id=${fixtureId}`),
+          this.fetchCached<any>(`fixture:${fixtureId}:events`, LIVE_TTL_MS, `/fixtures/events?fixture=${fixtureId}`),
+          this.fetchCached<any>(`fixture:${fixtureId}:stats`, LIVE_TTL_MS, `/fixtures/statistics?fixture=${fixtureId}`),
+          this.fetchCached<any>(`fixture:${fixtureId}:lineups`, LIVE_TTL_MS, `/fixtures/lineups?fixture=${fixtureId}`),
+        ]);
 
-      return {
-        fixture: fixtureData?.response?.[0] ?? null,
-        events: eventsData?.response ?? [],
-        statistics: statsData?.response ?? [],
-        lineups: lineupsData?.response ?? [],
-      };
-    } catch (error) {
-      console.error('Error fetching live fixture:', error);
-      return { fixture: null, events: [], statistics: [], lineups: [] };
-    }
+        return {
+          fixture: fixtureData?.response?.[0] ?? null,
+          events: eventsData?.response ?? [],
+          statistics: statsData?.response ?? [],
+          lineups: lineupsData?.response ?? [],
+        };
+      } catch (error) {
+        console.error('Error fetching live fixture:', error);
+        return { fixture: null, events: [], statistics: [], lineups: [] };
+      }
+    });
+  }
+
+  async getFixtureById(fixtureId: number): Promise<any | null> {
+    return getOrFetchCached<any | null>(`fixture:base:${fixtureId}`, MATCH_DETAIL_TTL_MS, async () => {
+      try {
+        const data = await this.fetchCached<any>(`fixture:${fixtureId}:base`, MATCH_DETAIL_TTL_MS, `/fixtures?id=${fixtureId}`);
+        return data?.response?.[0] ?? null;
+      } catch (error) {
+        console.error('Error fetching fixture base:', error);
+        return null;
+      }
+    });
   }
 
   /**
    * NEW: Get team's last match result
    */
   async getTeamLastMatch(teamId: number): Promise<FinishedMatch | null> {
-    try {
-      const data = await this.fetch(`/fixtures?team=${teamId}&last=1`);
-      
-      if (data?.response?.[0]) {
-        const fixture = data.response[0];
+    return getOrFetchCached<FinishedMatch | null>(`team:last:${teamId}`, RECENT_RESULTS_TTL_MS, async () => {
+      try {
+        const data = await this.fetchCached<any>(`fixtures:team:${teamId}:last:1`, RECENT_RESULTS_TTL_MS, `/fixtures?team=${teamId}&last=1`);
         
-        return {
-          id: fixture.fixture.id,
-          home: fixture.teams.home.name,
-          away: fixture.teams.away.name,
-          score: `${fixture.goals.home}-${fixture.goals.away}`,
-          league: fixture.league.name,
-          leagueId: fixture.league.id,
-          date: fixture.fixture.date,
-          homeLogo: fixture.teams.home.logo,
-          awayLogo: fixture.teams.away.logo
-        };
+        if (data?.response?.[0]) {
+          const fixture = data.response[0];
+          
+          return {
+            id: fixture.fixture.id,
+            home: fixture.teams.home.name,
+            away: fixture.teams.away.name,
+            score: `${fixture.goals.home}-${fixture.goals.away}`,
+            homeGoals: fixture.goals.home,
+            awayGoals: fixture.goals.away,
+            league: fixture.league.name,
+            leagueId: fixture.league.id,
+            date: fixture.fixture.date,
+            homeLogo: fixture.teams.home.logo,
+            awayLogo: fixture.teams.away.logo
+          };
+        }
+      } catch (error) {
+        console.error('Error fetching team last match:', error);
       }
-    } catch (error) {
-      console.error('Error fetching team last match:', error);
-    }
-    
-    return null;
+      
+      return null;
+    });
+  }
+
+  /**
+   * NEW: Get team's last fixtures
+   */
+  async getTeamLastFixtures(teamId: number, limit: number = 5): Promise<FinishedMatch[]> {
+    return getOrFetchCached<FinishedMatch[]>(`team:last:${teamId}:${limit}`, RECENT_RESULTS_TTL_MS, async () => {
+      try {
+        const data = await this.fetchCached<any>(`fixtures:team:${teamId}:last:${limit}`, RECENT_RESULTS_TTL_MS, `/fixtures?team=${teamId}&last=${limit}`);
+
+        if (data?.response) {
+          return data.response.map((fixture: any) => ({
+            id: fixture.fixture.id,
+            home: fixture.teams.home.name,
+            away: fixture.teams.away.name,
+            score: `${fixture.goals.home}-${fixture.goals.away}`,
+            homeGoals: fixture.goals.home,
+            awayGoals: fixture.goals.away,
+            league: fixture.league.name,
+            leagueId: fixture.league.id,
+            date: fixture.fixture.date,
+            homeLogo: fixture.teams.home.logo,
+            awayLogo: fixture.teams.away.logo
+          }));
+        }
+      } catch (error) {
+        console.error('Error fetching team last fixtures:', error);
+      }
+
+      return [];
+    });
   }
 
   /**
    * NEW: Get team's upcoming matches
    */
   async getTeamUpcomingMatches(teamId: number, limit: number = 5): Promise<Match[]> {
-    try {
-      const data = await this.fetch(`/fixtures?team=${teamId}&next=${limit}`);
-      
-      if (data?.response) {
-        return this.formatMatches(data.response, 'upcoming');
+    return getOrFetchCached<Match[]>(`team:upcoming:${teamId}:${limit}`, UPCOMING_TTL_MS, async () => {
+      try {
+        const data = await this.fetchCached<any>(`fixtures:team:${teamId}:next:${limit}`, UPCOMING_TTL_MS, `/fixtures?team=${teamId}&next=${limit}`);
+        
+        if (data?.response) {
+          return this.formatMatches(data.response, 'upcoming');
+        }
+      } catch (error) {
+        console.error('Error fetching team upcoming matches:', error);
       }
-    } catch (error) {
-      console.error('Error fetching team upcoming matches:', error);
-    }
-    
-    return [];
+      
+      return [];
+    });
   }
 
   /**
    * NEW: Get league's recent matches (last N days)
    */
   async getLeagueRecentMatches(leagueId: number, days: number = 6): Promise<FinishedMatch[]> {
-    try {
-      const endDate = new Date();
-      const startDate = new Date();
-      startDate.setDate(endDate.getDate() - days);
-      
-      const from = startDate.toISOString().split('T')[0];
-      const to = endDate.toISOString().split('T')[0];
-      
-      const data = await this.fetch(`/fixtures?league=${leagueId}&from=${from}&to=${to}&status=FT`);
-      
-      if (data?.response) {
-        return data.response.map((f: any) => ({
-          id: f.fixture.id,
-          home: f.teams.home.name,
-          away: f.teams.away.name,
-          score: `${f.goals.home}-${f.goals.away}`,
-          league: f.league.name,
-          date: f.fixture.date,
-          homeLogo: f.teams.home.logo,
-          awayLogo: f.teams.away.logo
-        }));
-      }
-    } catch (error) {
-      console.error('Error fetching league recent matches:', error);
-    }
+    const endDate = new Date();
+    const startDate = new Date();
+    startDate.setDate(endDate.getDate() - days);
     
-    return [];
+    const from = startDate.toISOString().split('T')[0];
+    const to = endDate.toISOString().split('T')[0];
+    
+    return getOrFetchCached<FinishedMatch[]>(`league:recent:${leagueId}:${from}:${to}`, RECENT_RESULTS_TTL_MS, async () => {
+      try {
+        const data = await this.fetchCached<any>(`fixtures:league:${leagueId}:from:${from}:to:${to}:status:FT`, RECENT_RESULTS_TTL_MS, `/fixtures?league=${leagueId}&from=${from}&to=${to}&status=FT`);
+        
+        if (data?.response) {
+          return data.response.map((f: any) => ({
+            id: f.fixture.id,
+            home: f.teams.home.name,
+            away: f.teams.away.name,
+            score: `${f.goals.home}-${f.goals.away}`,
+            homeGoals: f.goals.home,
+            awayGoals: f.goals.away,
+            league: f.league.name,
+            date: f.fixture.date,
+            homeLogo: f.teams.home.logo,
+            awayLogo: f.teams.away.logo
+          }));
+        }
+      } catch (error) {
+        console.error('Error fetching league recent matches:', error);
+      }
+      
+      return [];
+    });
   }
 
   /**
    * NEW: Get league's upcoming matches
    */
   async getLeagueUpcomingMatches(leagueId: number, limit: number = 10): Promise<Match[]> {
-    try {
-      const data = await this.fetch(`/fixtures?league=${leagueId}&next=${limit}`);
-      
-      if (data?.response) {
-        return this.formatMatches(data.response, 'upcoming');
+    return getOrFetchCached<Match[]>(`league:upcoming:${leagueId}:${limit}`, UPCOMING_TTL_MS, async () => {
+      try {
+        const data = await this.fetchCached<any>(`fixtures:league:${leagueId}:next:${limit}`, UPCOMING_TTL_MS, `/fixtures?league=${leagueId}&next=${limit}`);
+        
+        if (data?.response) {
+          return this.formatMatches(data.response, 'upcoming');
+        }
+      } catch (error) {
+        console.error('Error fetching league upcoming matches:', error);
       }
-    } catch (error) {
-      console.error('Error fetching league upcoming matches:', error);
-    }
-    
-    return [];
+      
+      return [];
+    });
   }
 
   /**
@@ -811,31 +900,35 @@ console.log(`📅 Matches from last ${daysBack} days: ${recentFiltered.length}`)
   }
 
   async getMatchLineup(matchId: number): Promise<{ home: Lineup; away: Lineup }> {
-    try {
-      const data = await this.fetch(`/fixtures/lineups?fixture=${matchId}`);
-      
-      if (data?.response && data.response.length >= 2) {
-        return this.formatLineups(data.response);
+    return getOrFetchCached<{ home: Lineup; away: Lineup }>(`fixture:lineups:${matchId}`, MATCH_DETAIL_TTL_MS, async () => {
+      try {
+        const data = await this.fetchCached<any>(`fixtures:lineups:${matchId}`, MATCH_DETAIL_TTL_MS, `/fixtures/lineups?fixture=${matchId}`);
+        
+        if (data?.response && data.response.length >= 2) {
+          return this.formatLineups(data.response);
+        }
+      } catch (error) {
+        console.error('Error fetching lineup:', error);
       }
-    } catch (error) {
-      console.error('Error fetching lineup:', error);
-    }
-    
-    return this.getMockLineup();
+      
+      return this.getMockLineup();
+    });
   }
 
   async getMatchEvents(matchId: number): Promise<MatchEvent[]> {
-    try {
-      const data = await this.fetch(`/fixtures/events?fixture=${matchId}`);
-      
-      if (data?.response && data.response.length > 0) {
-        return this.formatEvents(data.response);
+    return getOrFetchCached<MatchEvent[]>(`fixture:events:${matchId}`, MATCH_DETAIL_TTL_MS, async () => {
+      try {
+        const data = await this.fetchCached<any>(`fixtures:events:${matchId}`, MATCH_DETAIL_TTL_MS, `/fixtures/events?fixture=${matchId}`);
+        
+        if (data?.response && data.response.length > 0) {
+          return this.formatEvents(data.response);
+        }
+      } catch (error) {
+        console.error('Error fetching events:', error);
       }
-    } catch (error) {
-      console.error('Error fetching events:', error);
-    }
-    
-    return this.getMockEvents();
+      
+      return this.getMockEvents();
+    });
   }
 
   private formatMatches(fixtures: any[], status: Match['status']): Match[] {
@@ -852,6 +945,8 @@ console.log(`📅 Matches from last ${daysBack} days: ${recentFiltered.length}`)
         homeId: f.teams.home.id,  // NEW: for communities
         awayId: f.teams.away.id,  // NEW: for communities
         leagueId: f.league.id,    // NEW: for communities
+        venueName: f.fixture?.venue?.name,
+        venueCity: f.fixture?.venue?.city,
         score: homeGoals !== null ? `${homeGoals}-${awayGoals}` : undefined,
         league: f.league.name,
         status,

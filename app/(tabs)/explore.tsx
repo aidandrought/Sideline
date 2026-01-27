@@ -187,6 +187,8 @@ export default function ExploreScreen() {
   const [newsHasMore, setNewsHasMore] = useState(true);
   const [newsLoadingMore, setNewsLoadingMore] = useState(false);
   const [newsRateLimited, setNewsRateLimited] = useState(false);
+  const [lastMatchFetchCount, setLastMatchFetchCount] = useState(0);
+  const [lastMatchFetchPage, setLastMatchFetchPage] = useState(0);
   const searchAbortRef = useRef<AbortController | null>(null);
   
   const [loading, setLoading] = useState(cachedAll.length === 0);
@@ -199,11 +201,13 @@ export default function ExploreScreen() {
   const latestSearchRef = useRef('');
   const mountTimeRef = useRef(Date.now());
   const firstRenderLoggedRef = useRef(false);
+  const initialQueryAppliedRef = useRef<string | null>(null);
 
   useEffect(() => {
-    if (initialQuery) {
-      setSearchQuery(initialQuery);
-    }
+    if (!initialQuery) return;
+    if (initialQueryAppliedRef.current === initialQuery) return;
+    initialQueryAppliedRef.current = initialQuery;
+    setSearchQuery(initialQuery);
   }, [initialQuery]);
 
   useEffect(() => {
@@ -214,6 +218,8 @@ export default function ExploreScreen() {
       setNewsPage(1);
       setNewsHasMore(true);
       setNewsRateLimited(false);
+      setLastMatchFetchCount(0);
+      setLastMatchFetchPage(0);
       if (searchAbortRef.current) {
         searchAbortRef.current.abort();
       }
@@ -224,6 +230,8 @@ export default function ExploreScreen() {
     setNewsPage(1);
     setNewsHasMore(true);
     setNewsRateLimited(false);
+    setLastMatchFetchCount(0);
+    setLastMatchFetchPage(0);
 
     const controller = new AbortController();
     if (searchAbortRef.current) {
@@ -285,6 +293,13 @@ export default function ExploreScreen() {
     });
   }, []);
 
+  const parseMatchQuery = useCallback((query: string) => {
+    const match = query.match(/^"(.+?)"\s+OR\s+"(.+?)"$/i);
+    if (!match) return null;
+    return { teamA: match[1].trim(), teamB: match[2].trim() };
+  }, []);
+  const matchQueryParts = useMemo(() => parseMatchQuery(searchQuery.trim()), [parseMatchQuery, searchQuery]);
+
   const loadNewsPage = useCallback(async (query: string, pageToLoad: number, append: boolean, signal?: AbortSignal) => {
     if (append && (newsLoadingMore || !newsHasMore)) return;
     if (append) {
@@ -295,18 +310,41 @@ export default function ExploreScreen() {
       if (__DEV__) {
         console.time(`explore.news.page.${pageToLoad}`);
       }
-      const response = await newsAPI.searchNewsQuery({ q: query, page: pageToLoad, pageSize: 20, signal });
-      if (response.isStale) {
-        setNewsRateLimited(true);
+      const matchParts = parseMatchQuery(query.trim());
+      let unique: NewsArticle[] = [];
+      let receivedCount = 0;
+
+      if (matchParts) {
+        const results = await newsAPI.searchMatchNews({
+          teamA: matchParts.teamA,
+          teamB: matchParts.teamB,
+          limit: 20,
+          page: pageToLoad,
+          pageSize: 20
+        });
+        const valid = results.filter(article => article.title && article.url);
+        unique = dedupeNewsByUrl(valid);
+        receivedCount = unique.length;
+        setLastMatchFetchCount(unique.length);
+        setLastMatchFetchPage(pageToLoad);
+      } else {
+        const response = await newsAPI.searchNewsQuery({ q: query, page: pageToLoad, pageSize: 20, signal });
+        if (response.isStale) {
+          setNewsRateLimited(true);
+        }
+        const valid = response.articles.filter(article => article.title && article.url);
+        unique = dedupeNewsByUrl(valid);
+        receivedCount = response.totalResults ? (pageToLoad * 20 < response.totalResults ? 20 : unique.length) : unique.length;
+        setLastMatchFetchCount(0);
+        setLastMatchFetchPage(0);
       }
-      const valid = response.articles.filter(article => article.title && article.url);
-      const unique = dedupeNewsByUrl(valid);
+
       setSearchResults(prev => ({
         ...prev,
         news: append ? dedupeNewsByUrl([...prev.news, ...unique]) : unique
       }));
       setNewsPage(pageToLoad);
-      const hasMore = response.totalResults ? pageToLoad * 20 < response.totalResults : unique.length === 20;
+      const hasMore = matchParts ? receivedCount > 0 : receivedCount === 20;
       setNewsHasMore(hasMore);
     } catch (error) {
       if (error && typeof error === 'object' && 'name' in error && error.name === 'AbortError') {
@@ -327,7 +365,7 @@ export default function ExploreScreen() {
         setNewsLoadingMore(false);
       }
     }
-  }, [dedupeNewsByUrl, newsHasMore, newsLoadingMore]);
+  }, [dedupeNewsByUrl, newsHasMore, newsLoadingMore, parseMatchQuery]);
 
   const hydrateExploreCache = useCallback(async () => {
     const [live, upcoming, results, news] = await Promise.all([
@@ -773,6 +811,9 @@ export default function ExploreScreen() {
                   >
                     <Text style={styles.loadMoreButtonText}>Load more news</Text>
                   </TouchableOpacity>
+                )}
+                {!!matchQueryParts && lastMatchFetchPage >= 2 && lastMatchFetchCount === 0 && (
+                  <Text style={styles.matchNoMoreText}>No more match news found</Text>
                 )}
               </View>
             )}
@@ -1268,6 +1309,11 @@ const styles = StyleSheet.create({
     color: '#999',
     paddingHorizontal: 20,
     paddingTop: 6,
+  },
+  matchNoMoreText: {
+    fontSize: 13,
+    color: '#999',
+    paddingTop: 8,
   },
   
   // Match Results

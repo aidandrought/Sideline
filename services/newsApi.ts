@@ -24,6 +24,7 @@ const responseCache = new Map<string, { expiresAt: number; data: any }>();
 const inFlight = new Map<string, Promise<any>>();
 const TOP_NEWS_TTL_MS = 6 * 60 * 60 * 1000;
 const MATCH_TTL_MS = 6 * 60 * 60 * 1000;
+const MATCH_SEARCH_TTL_MS = 30 * 60 * 1000;
 const SEARCH_TTL_MS = 15 * 60 * 1000;
 let cooldownUntil = 0;
 
@@ -485,6 +486,80 @@ class NewsAPI {
       if (error instanceof RateLimitError) throw error;
       console.error('Error searching news:', error);
       throw error;
+    }
+  }
+
+  /**
+   * Match news search with local filtering (no OR query)
+   */
+  async searchMatchNews({
+    teamA,
+    teamB,
+    limit,
+    page = 1,
+    pageSize = 20
+  }: {
+    teamA: string;
+    teamB: string;
+    limit: number;
+    page?: number;
+    pageSize?: number;
+  }): Promise<NewsArticle[]> {
+    const normalizedA = teamA.trim();
+    const normalizedB = teamB.trim();
+    const cacheKey = `news:match:${normalizedA.toLowerCase()}:${normalizedB.toLowerCase()}:page:${page}`;
+    const cached = getCachedResponse(cacheKey);
+    if (cached && !cached.isStale) return cached.data as NewsArticle[];
+    if (cached && cached.isStale && Date.now() < cooldownUntil) return cached.data as NewsArticle[];
+    if (inFlight.has(cacheKey)) return inFlight.get(cacheKey) as Promise<NewsArticle[]>;
+
+    const request = (async () => {
+      const effectivePageSize = Math.max(pageSize, limit);
+      const fetchPage = (pageToFetch: number) =>
+        Promise.all([
+          this.searchNewsQuery({ q: `"${normalizedA}"`, page: pageToFetch, pageSize: effectivePageSize }),
+          this.searchNewsQuery({ q: `"${normalizedB}"`, page: pageToFetch, pageSize: effectivePageSize })
+        ]);
+
+      const [teamAResult, teamBResult] = await fetchPage(page);
+      let merged = [...(teamAResult.articles || []), ...(teamBResult.articles || [])];
+      const dedupedMap = new Map<string, NewsArticle>();
+      merged.forEach(article => {
+        const key = (article.url || `${article.title}-${article.publishedAt}`).toLowerCase();
+        if (!dedupedMap.has(key)) {
+          dedupedMap.set(key, article);
+        }
+      });
+
+      const combinedTextIncludesTeam = (article: NewsArticle) => {
+        const text = `${article.title} ${article.description}`.toLowerCase();
+        return text.includes(normalizedA.toLowerCase()) || text.includes(normalizedB.toLowerCase());
+      };
+
+      let filtered = Array.from(dedupedMap.values()).filter(combinedTextIncludesTeam);
+      if (filtered.length < limit) {
+        const [teamAResultNext, teamBResultNext] = await fetchPage(page + 1);
+        merged = [...merged, ...(teamAResultNext.articles || []), ...(teamBResultNext.articles || [])];
+        const nextMap = new Map<string, NewsArticle>();
+        merged.forEach(article => {
+          const key = (article.url || `${article.title}-${article.publishedAt}`).toLowerCase();
+          if (!nextMap.has(key)) {
+            nextMap.set(key, article);
+          }
+        });
+        filtered = Array.from(nextMap.values()).filter(combinedTextIncludesTeam);
+      }
+      const sorted = filtered.sort((a, b) => new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime());
+      const finalResults = sorted.slice(0, limit);
+      setCachedResponse(cacheKey, finalResults, MATCH_SEARCH_TTL_MS);
+      return finalResults;
+    })();
+
+    inFlight.set(cacheKey, request);
+    try {
+      return await request;
+    } finally {
+      inFlight.delete(cacheKey);
     }
   }
 

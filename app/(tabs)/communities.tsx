@@ -6,6 +6,7 @@ import { useRouter } from 'expo-router';
 import { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
+  FlatList,
   Image,
   Modal,
   RefreshControl,
@@ -285,14 +286,12 @@ export default function CommunitiesScreen() {
           <Text style={styles.sectionCount}>{myCommunities.length}</Text>
         </View>
 
-        <ScrollView 
-          horizontal 
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={styles.horizontalScrollContent}
-        >
-          {myCommunities.map(community => (
+        <FlatList
+          horizontal
+          data={myCommunities}
+          keyExtractor={(community) => `my-${community.type}-${community.id}`}
+          renderItem={({ item: community }) => (
             <TouchableOpacity
-              key={`my-${community.type}-${community.id}`}
               style={styles.myTeamCard}
               onPress={() => handleCommunityPress(community)}
             >
@@ -316,16 +315,24 @@ export default function CommunitiesScreen() {
                 <Text style={styles.myTeamLeague} numberOfLines={1}>{community.league}</Text>
               )}
             </TouchableOpacity>
-          ))}
-          
-          <TouchableOpacity 
-            style={styles.addTeamCard}
-            onPress={() => setSearchModalVisible(true)}
-          >
-            <Ionicons name="add-circle" size={48} color="#0066CC" />
-            <Text style={styles.addTeamText}>Join More</Text>
-          </TouchableOpacity>
-        </ScrollView>
+          )}
+          ListFooterComponent={(
+            <TouchableOpacity 
+              style={styles.addTeamCard}
+              onPress={() => setSearchModalVisible(true)}
+            >
+              <Ionicons name="add-circle" size={48} color="#0066CC" />
+              <Text style={styles.addTeamText}>Join More</Text>
+            </TouchableOpacity>
+          )}
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.horizontalScrollContent}
+          initialNumToRender={6}
+          windowSize={5}
+          maxToRenderPerBatch={8}
+          updateCellsBatchingPeriod={50}
+          removeClippedSubviews
+        />
       </View>
     );
   };
@@ -343,10 +350,11 @@ export default function CommunitiesScreen() {
         </TouchableOpacity>
       </View>
 
-      <View style={styles.suggestedGrid}>
-        {suggestedCommunities.slice(0, 6).map(community => (
+      <FlatList
+        data={suggestedCommunities.slice(0, 6)}
+        keyExtractor={(community) => `suggested-${community.type}-${community.id}`}
+        renderItem={({ item: community }) => (
           <TouchableOpacity
-            key={`suggested-${community.type}-${community.id}`}
             style={styles.suggestedCard}
             onPress={() => handleCommunityPress(community)}
           >
@@ -384,8 +392,15 @@ export default function CommunitiesScreen() {
               />
             </TouchableOpacity>
           </TouchableOpacity>
-        ))}
-      </View>
+        )}
+        contentContainerStyle={styles.suggestedGrid}
+        scrollEnabled={false}
+        initialNumToRender={6}
+        windowSize={5}
+        maxToRenderPerBatch={8}
+        updateCellsBatchingPeriod={50}
+        removeClippedSubviews
+      />
     </View>
   );
 
@@ -402,90 +417,108 @@ export default function CommunitiesScreen() {
         </View>
         
         <Text style={styles.subsectionTitle}>Leagues ({leagues.length})</Text>
-        {leagues.slice(0, 10).map(community => (
-          <TouchableOpacity
-            key={`all-${community.type}-${community.id}`}
-            style={styles.communityListItem}
-            onPress={() => handleCommunityPress(community)}
-          >
-            {community.logo ? (
-              <Image 
-                source={{ uri: community.logo, cache: 'force-cache' }} 
-                style={styles.communityListLogo}
-                resizeMode="contain"
-              />
-            ) : (
-              <View style={styles.communityListLogoPlaceholder}>
-                <Ionicons name="trophy" size={24} color="#0066CC" />
-              </View>
-            )}
-            <View style={styles.communityListInfo}>
-              <Text style={styles.communityListName}>{community.name}</Text>
-              {community.country && (
-                <Text style={styles.communityListMeta}>{community.country}</Text>
-              )}
-            </View>
-            <TouchableOpacity 
-              style={[
-                styles.followButtonSmall,
-                followedIds.has(community.id) && styles.followedButtonSmall
-              ]}
-              onPress={(e) => {
-                e.stopPropagation();
-                handleFollowCommunity(community);
-              }}
+        <FlatList
+          data={leagues.slice(0, 10)}
+          keyExtractor={(community) => `all-${community.type}-${community.id}`}
+          renderItem={({ item: community }) => (
+            <TouchableOpacity
+              style={styles.communityListItem}
+              onPress={() => handleCommunityPress(community)}
             >
-              <Ionicons 
-                name={followedIds.has(community.id) ? 'checkmark' : 'add'} 
-                size={16} 
-                color={followedIds.has(community.id) ? '#0066CC' : '#FFF'} 
-              />
+              {community.logo ? (
+                <Image 
+                  source={{ uri: community.logo, cache: 'force-cache' }} 
+                  style={styles.communityListLogo}
+                  resizeMode="contain"
+                />
+              ) : (
+                <View style={styles.communityListLogoPlaceholder}>
+                  <Ionicons name="trophy" size={24} color="#0066CC" />
+                </View>
+              )}
+              <View style={styles.communityListInfo}>
+                <Text style={styles.communityListName}>{community.name}</Text>
+                {community.country && (
+                  <Text style={styles.communityListMeta}>{community.country}</Text>
+                )}
+              </View>
+              <TouchableOpacity 
+                style={[
+                  styles.followButtonSmall,
+                  followedIds.has(community.id) && styles.followedButtonSmall
+                ]}
+                onPress={(e) => {
+                  e.stopPropagation();
+                  handleFollowCommunity(community);
+                }}
+              >
+                <Ionicons 
+                  name={followedIds.has(community.id) ? 'checkmark' : 'add'} 
+                  size={16} 
+                  color={followedIds.has(community.id) ? '#0066CC' : '#FFF'} 
+                />
+              </TouchableOpacity>
             </TouchableOpacity>
-          </TouchableOpacity>
-        ))}
+          )}
+          scrollEnabled={false}
+          initialNumToRender={10}
+          windowSize={7}
+          maxToRenderPerBatch={12}
+          updateCellsBatchingPeriod={50}
+          removeClippedSubviews
+        />
         
         <Text style={[styles.subsectionTitle, { marginTop: 20 }]}>Teams ({teams.length})</Text>
-        {teams.slice(0, 20).map(community => (
-          <TouchableOpacity
-            key={`all-${community.type}-${community.id}`}
-            style={styles.communityListItem}
-            onPress={() => handleCommunityPress(community)}
-          >
-            {community.logo ? (
-              <Image 
-                source={{ uri: community.logo, cache: 'force-cache' }} 
-                style={styles.communityListLogo}
-                resizeMode="contain"
-              />
-            ) : (
-              <View style={styles.communityListLogoPlaceholder}>
-                <Ionicons name="shield" size={24} color="#0066CC" />
-              </View>
-            )}
-            <View style={styles.communityListInfo}>
-              <Text style={styles.communityListName}>{community.name}</Text>
-              {community.league && (
-                <Text style={styles.communityListMeta}>{community.league}</Text>
-              )}
-            </View>
-            <TouchableOpacity 
-              style={[
-                styles.followButtonSmall,
-                followedIds.has(community.id) && styles.followedButtonSmall
-              ]}
-              onPress={(e) => {
-                e.stopPropagation();
-                handleFollowCommunity(community);
-              }}
+        <FlatList
+          data={teams.slice(0, 20)}
+          keyExtractor={(community) => `all-${community.type}-${community.id}`}
+          renderItem={({ item: community }) => (
+            <TouchableOpacity
+              style={styles.communityListItem}
+              onPress={() => handleCommunityPress(community)}
             >
-              <Ionicons 
-                name={followedIds.has(community.id) ? 'checkmark' : 'add'} 
-                size={16} 
-                color={followedIds.has(community.id) ? '#0066CC' : '#FFF'} 
-              />
+              {community.logo ? (
+                <Image 
+                  source={{ uri: community.logo, cache: 'force-cache' }} 
+                  style={styles.communityListLogo}
+                  resizeMode="contain"
+                />
+              ) : (
+                <View style={styles.communityListLogoPlaceholder}>
+                  <Ionicons name="shield" size={24} color="#0066CC" />
+                </View>
+              )}
+              <View style={styles.communityListInfo}>
+                <Text style={styles.communityListName}>{community.name}</Text>
+                {community.league && (
+                  <Text style={styles.communityListMeta}>{community.league}</Text>
+                )}
+              </View>
+              <TouchableOpacity 
+                style={[
+                  styles.followButtonSmall,
+                  followedIds.has(community.id) && styles.followedButtonSmall
+                ]}
+                onPress={(e) => {
+                  e.stopPropagation();
+                  handleFollowCommunity(community);
+                }}
+              >
+                <Ionicons 
+                  name={followedIds.has(community.id) ? 'checkmark' : 'add'} 
+                  size={16} 
+                  color={followedIds.has(community.id) ? '#0066CC' : '#FFF'} 
+                />
+              </TouchableOpacity>
             </TouchableOpacity>
-          </TouchableOpacity>
-        ))}
+          )}
+          scrollEnabled={false}
+          initialNumToRender={12}
+          windowSize={7}
+          maxToRenderPerBatch={12}
+          updateCellsBatchingPeriod={50}
+          removeClippedSubviews
+        />
         
         <TouchableOpacity 
           style={styles.seeMoreButton}
@@ -562,22 +595,12 @@ export default function CommunitiesScreen() {
 
         {/* League Filter (for teams only) */}
         {selectedFilter === 'teams' && (
-          <ScrollView 
-            horizontal 
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={styles.leagueFiltersRow}
-          >
-            <TouchableOpacity
-              style={[styles.leagueChip, !selectedLeague && styles.leagueChipActive]}
-              onPress={() => applyLeagueFilter(null)}
-            >
-              <Text style={[styles.leagueChipText, !selectedLeague && styles.leagueChipTextActive]}>
-                All Leagues
-              </Text>
-            </TouchableOpacity>
-            {getAvailableLeagues().map(league => (
+          <FlatList
+            horizontal
+            data={getAvailableLeagues()}
+            keyExtractor={(league) => league}
+            renderItem={({ item: league }) => (
               <TouchableOpacity
-                key={league}
                 style={[styles.leagueChip, selectedLeague === league && styles.leagueChipActive]}
                 onPress={() => applyLeagueFilter(league)}
               >
@@ -585,8 +608,25 @@ export default function CommunitiesScreen() {
                   {league}
                 </Text>
               </TouchableOpacity>
-            ))}
-          </ScrollView>
+            )}
+            ListHeaderComponent={(
+              <TouchableOpacity
+                style={[styles.leagueChip, !selectedLeague && styles.leagueChipActive]}
+                onPress={() => applyLeagueFilter(null)}
+              >
+                <Text style={[styles.leagueChipText, !selectedLeague && styles.leagueChipTextActive]}>
+                  All Leagues
+                </Text>
+              </TouchableOpacity>
+            )}
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.leagueFiltersRow}
+            initialNumToRender={10}
+            windowSize={5}
+            maxToRenderPerBatch={12}
+            updateCellsBatchingPeriod={50}
+            removeClippedSubviews
+          />
         )}
 
         {/* Results Count */}
@@ -597,10 +637,12 @@ export default function CommunitiesScreen() {
         </View>
 
         {/* Results List */}
-        <ScrollView style={styles.modalContent} showsVerticalScrollIndicator={false}>
-          {displayedCommunities.map(community => (
+        <FlatList
+          style={styles.modalContent}
+          data={displayedCommunities}
+          keyExtractor={(community) => `search-${community.type}-${community.id}`}
+          renderItem={({ item: community }) => (
             <TouchableOpacity
-              key={`search-${community.type}-${community.id}`}
               style={styles.searchResultItem}
               onPress={() => {
                 handleCommunityPress(community);
@@ -645,9 +687,15 @@ export default function CommunitiesScreen() {
                 />
               </TouchableOpacity>
             </TouchableOpacity>
-          ))}
-          <View style={{ height: 40 }} />
-        </ScrollView>
+          )}
+          showsVerticalScrollIndicator={false}
+          initialNumToRender={12}
+          windowSize={7}
+          maxToRenderPerBatch={12}
+          updateCellsBatchingPeriod={50}
+          removeClippedSubviews
+          ListFooterComponent={<View style={{ height: 40 }} />}
+        />
       </View>
     </Modal>
   );
