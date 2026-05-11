@@ -117,7 +117,6 @@ export default function FantasyDashboard() {
   const isLoading = teamsLoading || leaguesLoading || wcLoading || gwLoading;
   const hasTeams = teams && teams.length > 0;
   const hasLeagues = leagues && leagues.length > 0;
-  const showOnboarding = !isLoading && !hasTeams && !hasLeagues;
 
   const deadlineMs = nextGW ? getDeadlineMs(nextGW) : 0;
   const isUrgent = deadlineMs > 0 && deadlineMs < 3_600_000;
@@ -198,7 +197,7 @@ export default function FantasyDashboard() {
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 10, paddingBottom: 2 }}>
             {[
               { emoji: '🤝', step: '1', title: 'Join Free',      desc: 'Join the World Cup 2026 league. Compete with fans worldwide — 100% free.' },
-              { emoji: '⚽', step: '2', title: 'Pick 18 Players', desc: 'Select 18 players from 48 nations. Stay within your £100m budget.' },
+              { emoji: '⚽', step: '2', title: 'Pick 16 Players', desc: 'Select 16 players from 48 nations. Stay within your £100m budget.' },
               { emoji: '🎖️', step: '3', title: 'Choose Captain', desc: 'Your captain scores double points. Vice-captain scores 1.5×.' },
               { emoji: '📈', step: '4', title: 'Score & Climb',   desc: 'Goals, assists, clean sheets earn points each gameweek.' },
             ].map((item) => (
@@ -216,25 +215,6 @@ export default function FantasyDashboard() {
           </ScrollView>
         </View>
 
-        {/* ── Onboarding ───────────────────────────────────────────────── */}
-        {showOnboarding && (
-          <View style={styles.onboardingCard}>
-            <Text style={styles.onboardingTitle}>New to Fantasy Football?</Text>
-            <Text style={styles.onboardingBody}>
-              Pick players, set your captain, and score points based on real match performances.
-              It's free — jump in now and climb the World Cup leaderboard!
-            </Text>
-            <TouchableOpacity style={styles.onboardingBtnGold} onPress={handleBuildSquad}>
-              <Text style={styles.onboardingBtnGoldText}>Build Your Squad Now →</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.onboardingBtnOrange} onPress={handleJoinWorldCup}>
-              <Text style={styles.onboardingBtnOrangeText}>Join World Cup League</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.onboardingBtnOutline} onPress={() => router.push('/fantasy/browse' as any)}>
-              <Text style={styles.onboardingBtnOutlineText}>Browse All Leagues</Text>
-            </TouchableOpacity>
-          </View>
-        )}
 
         {/* ── My Leagues ───────────────────────────────────────────────── */}
         {(hasLeagues || isLoading) && (
@@ -422,27 +402,6 @@ const styles = StyleSheet.create({
   howStepText: { color: '#fff', fontSize: 10, fontWeight: '900' },
   howTitle: { fontSize: 13, fontWeight: '700', color: PALETTE.text },
   howDesc: { fontSize: 11, color: PALETTE.muted, lineHeight: 15.5 },
-
-  // Onboarding
-  onboardingCard: {
-    backgroundColor: PALETTE.surface, borderRadius: 20, borderWidth: 1,
-    borderColor: PALETTE.border, padding: 24, gap: 10,
-  },
-  onboardingTitle: { fontSize: 19, fontWeight: '800', color: PALETTE.text, textAlign: 'center', letterSpacing: -0.2 },
-  onboardingBody: { fontSize: 14, color: PALETTE.muted, textAlign: 'center', lineHeight: 21 },
-  onboardingBtnGold: {
-    backgroundColor: PALETTE.primary, borderRadius: 14, paddingVertical: 15, alignItems: 'center',
-  },
-  onboardingBtnGoldText: { color: '#fff', fontWeight: '800', fontSize: 15 },
-  onboardingBtnOrange: {
-    backgroundColor: 'transparent', borderRadius: 14, paddingVertical: 15, alignItems: 'center',
-    borderWidth: 1, borderColor: PALETTE.border,
-  },
-  onboardingBtnOrangeText: { color: PALETTE.text, fontWeight: '600', fontSize: 15 },
-  onboardingBtnOutline: {
-    borderRadius: 14, paddingVertical: 13, alignItems: 'center',
-  },
-  onboardingBtnOutlineText: { color: PALETTE.muted, fontWeight: '600', fontSize: 14 },
 
   // Sections
   section: { gap: 10 },
