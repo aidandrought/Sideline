@@ -91,16 +91,21 @@ export default function FantasyDashboard() {
     setRefreshing(false);
   };
 
+  const WC_LEAGUE_ID = worldCupLeague?.id ?? 'wc2026';
+
   const handleJoinWorldCup = async () => {
-    if (!userId || !userProfile || !worldCupLeague) return;
+    if (!userId || !userProfile) {
+      router.push('/(auth)/login' as any);
+      return;
+    }
     if (isMemberWC) {
-      router.push(`/fantasy/league/${worldCupLeague.id}` as any);
+      router.push(`/fantasy/league/${WC_LEAGUE_ID}` as any);
       return;
     }
     setJoiningWC(true);
     try {
-      await joinLeague(worldCupLeague.id, userId, userProfile.username, `${userProfile.username}'s WC Team`);
-      router.push(`/fantasy/league/${worldCupLeague.id}` as any);
+      await joinLeague(WC_LEAGUE_ID, userId, userProfile.username, `${userProfile.username}'s WC Team`);
+      router.push(`/fantasy/league/${WC_LEAGUE_ID}` as any);
     } catch {
       Alert.alert('Could not join', 'Please try again.');
     } finally {
@@ -196,7 +201,7 @@ export default function FantasyDashboard() {
           <Text style={styles.sectionTitle}>How to Play</Text>
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 10, paddingBottom: 2 }}>
             {[
-              { emoji: '🤝', step: '1', title: 'Join Free',      desc: 'Join the World Cup 2026 league. Compete with fans worldwide — 100% free.' },
+              { emoji: '🤝', step: '1', title: 'Join Free',      desc: 'Join the World Cup 2026 league. Compete with fans worldwide. 100% free.' },
               { emoji: '⚽', step: '2', title: 'Pick 16 Players', desc: 'Select 16 players from 48 nations. Stay within your £100m budget.' },
               { emoji: '🎖️', step: '3', title: 'Choose Captain', desc: 'Your captain scores double points. Vice-captain scores 1.5×.' },
               { emoji: '📈', step: '4', title: 'Score & Climb',   desc: 'Goals, assists, clean sheets earn points each gameweek.' },

@@ -423,7 +423,7 @@ export default function BrowseScreen() {
             activeOpacity={0.8}
           >
             <Text style={[s.tabBtnText, activeTab === tab && s.tabBtnTextActive]}>
-              {tab === 'system' ? 'System' : tab === 'community' ? 'Community' : 'Private'}
+              {tab === 'system' ? 'Official' : tab === 'community' ? 'Public' : 'Private'}
             </Text>
           </TouchableOpacity>
         ))}
@@ -440,27 +440,13 @@ export default function BrowseScreen() {
             contentContainerStyle={[s.tabContent, { paddingBottom: insets.bottom + 32 }]}
             showsVerticalScrollIndicator={false}
           >
-            {wcLeague && (
-              <FeaturedCard
-                league={wcLeague}
-                onJoin={handleJoin}
-                joining={joiningId === wcLeague.id}
-              />
-            )}
-            {!wcLeague && (
-              <View style={s.wcPlaceholder}>
-                <View style={[fs.card, { marginHorizontal: 0 }]}>
-                  <View style={fs.gradient}>
-                    <Text style={fs.badge}>⭐ FEATURED</Text>
-                    <Text style={fs.title}>🏆 FIFA World Cup 2026</Text>
-                    <Text style={fs.subtitle}>June 2026 · 48 Teams · USA / Canada / Mexico</Text>
-                    <Text style={[s.soonText]}>Coming Soon</Text>
-                  </View>
-                </View>
-              </View>
-            )}
+            <FeaturedCard
+              league={wcLeague ?? { id: 'wc2026', name: 'FIFA World Cup 2026', memberCount: 0 } as any}
+              onJoin={handleJoin}
+              joining={joiningId === (wcLeague?.id ?? 'wc2026')}
+            />
 
-            <Text style={s.sectionLabel}>All System Leagues</Text>
+            <Text style={s.sectionLabel}>All Official Leagues</Text>
             {otherSystem.length === 0 && (
               <Text style={s.emptyText}>No other system leagues available right now.</Text>
             )}
@@ -651,8 +637,6 @@ const s = StyleSheet.create({
     marginTop: 4,
   },
   emptyText: { fontSize: 14, color: C.muted, textAlign: 'center', paddingVertical: 24 },
-  soonText: { fontSize: 16, fontWeight: '700', color: C.gold, textAlign: 'center', marginTop: 8 },
-  wcPlaceholder: { marginHorizontal: 16, marginBottom: 12 },
   // Search
   searchWrap: {
     flexDirection: 'row',

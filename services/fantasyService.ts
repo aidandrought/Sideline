@@ -330,10 +330,10 @@ export const joinLeague = async (
     previousRank: 0,
     joinedAt: new Date().toISOString(),
   } as FantasyLeagueMember);
-  batch.update(doc(db, 'fantasyLeagues', leagueId), {
+  batch.set(doc(db, 'fantasyLeagues', leagueId), {
     memberCount: increment(1),
     updatedAt: new Date().toISOString(),
-  });
+  }, { merge: true });
   await batch.commit();
 };
 
