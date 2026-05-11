@@ -1148,8 +1148,8 @@ function PlayerPickerModal({
   }, [pickerSort]);
 
   const posIndex = !isBenchMode ? POSITIONS.indexOf(position!) : -1;
-  const prevPos = posIndex > 0 ? POSITIONS[posIndex - 1] : null;
-  const nextPos = posIndex >= 0 && posIndex < POSITIONS.length - 1 ? POSITIONS[posIndex + 1] : null;
+  const prevPos = posIndex >= 0 ? POSITIONS[(posIndex - 1 + POSITIONS.length) % POSITIONS.length] : null;
+  const nextPos = posIndex >= 0 ? POSITIONS[(posIndex + 1) % POSITIONS.length] : null;
 
   const pool = useMemo(() => {
     if (!visible) return [];
@@ -1195,18 +1195,16 @@ function PlayerPickerModal({
               {!isBenchMode && onPositionChange && (
                 <>
                   <TouchableOpacity
-                    onPress={() => { if (prevPos) { onPositionChange(prevPos); onSearchChange(''); } }}
-                    disabled={!prevPos}
-                    style={[styles.pickerNavBtn, !prevPos && styles.pickerNavBtnDisabled]}
+                    onPress={() => { onPositionChange!(prevPos!); onSearchChange(''); }}
+                    style={styles.pickerNavBtn}
                   >
-                    <Ionicons name="chevron-back" size={20} color={prevPos ? palette.text : palette.border} />
+                    <Ionicons name="chevron-back" size={20} color={palette.text} />
                   </TouchableOpacity>
                   <TouchableOpacity
-                    onPress={() => { if (nextPos) { onPositionChange(nextPos); onSearchChange(''); } }}
-                    disabled={!nextPos}
-                    style={[styles.pickerNavBtn, !nextPos && styles.pickerNavBtnDisabled]}
+                    onPress={() => { onPositionChange!(nextPos!); onSearchChange(''); }}
+                    style={styles.pickerNavBtn}
                   >
-                    <Ionicons name="chevron-forward" size={20} color={nextPos ? palette.text : palette.border} />
+                    <Ionicons name="chevron-forward" size={20} color={palette.text} />
                   </TouchableOpacity>
                 </>
               )}
@@ -1375,15 +1373,15 @@ function PlayerPickerModal({
                     <View style={[
                       styles.pickerRowBtn,
                       inSquad
-                        ? { backgroundColor: '#22C55E' }
+                        ? { backgroundColor: palette.primary }
                         : blocked
-                          ? { backgroundColor: palette.surface2 ?? palette.surface, borderWidth: 1, borderColor: palette.border }
+                          ? { backgroundColor: 'transparent', borderWidth: 1.5, borderColor: 'rgba(255,255,255,0.15)' }
                           : { backgroundColor: posColor },
                     ]}>
                       <Ionicons
                         name={inSquad ? 'checkmark' : 'add'}
                         size={16}
-                        color={blocked && !inSquad ? palette.subtext : '#fff'}
+                        color={blocked && !inSquad ? 'rgba(255,255,255,0.25)' : '#fff'}
                       />
                     </View>
                   </View>
