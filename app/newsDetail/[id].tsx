@@ -1,0 +1,570 @@
+// app/newsDetail/[id].tsx
+// News Article Detail - PL App Style
+// Features: Purple title, tag pills, full-width image, author/date, highlighted team names, NO comments
+
+import { Ionicons } from '@expo/vector-icons';
+import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useEffect, useMemo, useState } from 'react';
+import { ActivityIndicator, Image, ScrollView, Share, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { useTheme } from '../../context/ThemeContext';
+import { NewsImage } from '../../components/NewsImage';
+import { newsAPI, NewsArticle } from '../../services/newsApi';
+
+// Teams to highlight in purple (clickable style)
+const HIGHLIGHT_TEAMS = [
+  'Liverpool', 'Arsenal', 'Chelsea', 'Manchester City', 'Man City',
+  'Manchester United', 'Man United', 'Tottenham', 'Newcastle', 'West Ham',
+  'Aston Villa', 'Brighton', 'Fulham', 'Brentford', 'Crystal Palace',
+  'Everton', 'Wolves', 'Wolverhampton Wanderers', 'Bournemouth', 'Nottingham Forest',
+  'Real Madrid', 'Barcelona', 'Atletico Madrid', 'Bayern Munich', 'Dortmund',
+  'Borussia Dortmund', 'PSG', 'Paris Saint-Germain', 'Juventus', 'Inter Milan',
+  'AC Milan', 'Roma', 'Napoli', 'Lazio', 'Inter', 'Milan',
+  'Macclesfield', 'Morecambe', 'Hull City',
+];
+// Add this filter function to your newsAPI service or wherever you process news
+
+export const filterProfessionalFootballNews = (articles: NewsArticle[]): NewsArticle[] => {
+  // Keywords to exclude (college, amateur, youth football)
+  const excludeKeywords = [
+    // College football
+    'college football',
+    'ncaa football',
+    'cfp',
+    'college playoff',
+    'bowl game',
+    'national championship game',
+    'indiana',
+    'heisman',
+    'fbs',
+    'fcs',
+    'acc football',
+    'big ten football',
+    'sec football',
+    'pac-12 football',
+    'big 12 football',
+    'notre dame football',
+    'alabama football',
+    'ohio state football',
+    'michigan football',
+    'georgia football',
+    'clemson football',
+    'usc football',
+    'texas football',
+    'oklahoma football',
+    'penn state football',
+    'florida football',
+    'lsu football',
+    'oregon football',
+    'washington football',
+    'utah football',
+    'miami hurricanes',
+    'florida state',
+    'indiana hoosiers',
+    
+    // High school / youth
+    'high school football',
+    'prep football',
+    'youth football',
+    
+    // Amateur
+    'amateur football',
+    'semi-pro football',
+    
+    // Other American sports (just in case)
+    'american football' // We want soccer/football, not American football
+  ];
+
+  return articles.filter(article => {
+    const text = `${article.title} ${article.description || ''}`.toLowerCase();
+    
+    // Exclude if contains any banned keywords
+    const shouldExclude = excludeKeywords.some(keyword => 
+      text.includes(keyword.toLowerCase())
+    );
+    
+    return !shouldExclude;
+  });
+};
+
+
+export default function NewsDetailScreen() {
+  const router = useRouter();
+  const { id } = useLocalSearchParams();
+  const { isDark } = useTheme();
+  const [article, setArticle] = useState<NewsArticle | null>(null);
+  const [loading, setLoading] = useState(true);
+  const palette = useMemo(
+    () =>
+      isDark
+        ? {
+            background: '#0B0B0B',
+            card: '#1C1C1E',
+            text: '#E6E6E9',
+            subtext: '#A1A1A6',
+            accent: '#B58CFF',
+            border: '#2C2C2E',
+            tagBg: '#1B1624',
+            tagText: '#C9B8FF',
+            imageBg: '#1C1C1E',
+          }
+        : {
+            background: '#FFFFFF',
+            card: '#F5F5F7',
+            text: '#000000',
+            subtext: '#666666',
+            accent: '#37003C',
+            border: '#F0F0F0',
+            tagBg: '#F5F5F7',
+            tagText: '#333333',
+            imageBg: '#F5F5F7',
+          },
+    [isDark]
+  );
+
+  useEffect(() => {
+    loadArticle();
+  }, [id]);
+
+  const loadArticle = async () => {
+    try {
+      const articleId = Array.isArray(id) ? id[0] : id;
+      const decodedId = typeof articleId === 'string' ? decodeURIComponent(articleId) : '';
+      const found = decodedId ? await newsAPI.getArticleById(decodedId) : null;
+      setArticle(found);
+    } catch (error) {
+      console.error('Error loading article:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleShare = async () => {
+    if (!article) return;
+    
+    try {
+      await Share.share({
+        message: `${article.title}\n\nRead more on Sideline`,
+        title: article.title,
+      });
+    } catch (error) {
+      console.error('Error sharing:', error);
+    }
+  };
+
+  const formatDate = (dateString: string) => {
+    const date = new Date(dateString);
+    return date.toLocaleDateString('en-GB', {
+      day: 'numeric',
+      month: 'short',
+      year: 'numeric',
+    });
+  };
+
+  // Render content with highlighted team names
+  const renderHighlightedContent = (text: string) => {
+    if (!text) return null;
+
+    // Split text into paragraphs
+    const paragraphs = text.split('\n\n').filter(p => p.trim());
+
+    return paragraphs.map((paragraph, pIndex) => {
+      // Find all team mentions and their positions
+      let segments: { text: string; isTeam: boolean }[] = [];
+      let remainingText = paragraph;
+      let lastIndex = 0;
+
+      // Sort teams by length (longest first) to avoid partial matches
+      const sortedTeams = [...HIGHLIGHT_TEAMS].sort((a, b) => b.length - a.length);
+
+      // Create a regex pattern for all teams
+      const teamPattern = new RegExp(
+        `\\b(${sortedTeams.map(t => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})\\b`,
+        'gi'
+      );
+
+      let match;
+      let currentIndex = 0;
+      const matches: { start: number; end: number; team: string }[] = [];
+
+      while ((match = teamPattern.exec(paragraph)) !== null) {
+        matches.push({
+          start: match.index,
+          end: match.index + match[0].length,
+          team: match[0],
+        });
+      }
+
+      // Build segments
+      if (matches.length === 0) {
+        segments = [{ text: paragraph, isTeam: false }];
+      } else {
+        matches.forEach((m, i) => {
+          // Add text before this match
+          if (m.start > currentIndex) {
+            segments.push({
+              text: paragraph.slice(currentIndex, m.start),
+              isTeam: false,
+            });
+          }
+          // Add the team name
+          segments.push({
+            text: m.team,
+            isTeam: true,
+          });
+          currentIndex = m.end;
+        });
+        // Add remaining text
+        if (currentIndex < paragraph.length) {
+          segments.push({
+            text: paragraph.slice(currentIndex),
+            isTeam: false,
+          });
+        }
+      }
+
+      return (
+        <Text key={pIndex} style={[styles.paragraph, { color: palette.text }]}>
+          {segments.map((segment, sIndex) => (
+            <Text
+              key={sIndex}
+              style={segment.isTeam ? [styles.highlightedTeam, { color: palette.accent }] : undefined}
+            >
+              {segment.text}
+            </Text>
+          ))}
+        </Text>
+      );
+    });
+  };
+
+  if (loading) {
+    return (
+      <View style={[styles.container, { backgroundColor: palette.background }]}>
+        <View style={[styles.header, { backgroundColor: palette.background, borderBottomColor: palette.border }]}>
+          <TouchableOpacity
+            style={[styles.backButton, { backgroundColor: palette.card, borderColor: palette.border }]}
+            onPress={() => router.back()}
+          >
+            <Ionicons name="chevron-back" size={24} color={palette.accent} />
+          </TouchableOpacity>
+          <Text style={[styles.headerTitle, { color: palette.text }]}>News</Text>
+          <View style={styles.headerRight} />
+        </View>
+        <View style={styles.loadingContainer}>
+          <ActivityIndicator size="large" color={palette.accent} />
+        </View>
+      </View>
+    );
+  }
+
+  if (!article) {
+    return (
+      <View style={[styles.container, { backgroundColor: palette.background }]}>
+        <View style={[styles.header, { backgroundColor: palette.background, borderBottomColor: palette.border }]}>
+          <TouchableOpacity
+            style={[styles.backButton, { backgroundColor: palette.card, borderColor: palette.border }]}
+            onPress={() => router.back()}
+          >
+            <Ionicons name="chevron-back" size={24} color={palette.accent} />
+          </TouchableOpacity>
+          <Text style={[styles.headerTitle, { color: palette.text }]}>News</Text>
+          <View style={styles.headerRight} />
+        </View>
+        <View style={styles.errorContainer}>
+          <Ionicons name="newspaper-outline" size={64} color={palette.border} />
+          <Text style={[styles.errorText, { color: palette.subtext }]}>Article not found</Text>
+          <TouchableOpacity style={[styles.retryButton, { backgroundColor: palette.accent }]} onPress={() => router.back()}>
+            <Text style={styles.retryButtonText}>Go Back</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    );
+  }
+
+  // Get display tags (max 3 + overflow count)
+  const displayTags = article.tags?.slice(0, 3) || ['news'];
+  const overflowCount = (article.tags?.length || 1) - 3;
+
+  return (
+    <View style={[styles.container, { backgroundColor: palette.background }]}>
+      {/* Header - PL Style */}
+      <View style={[styles.header, { backgroundColor: palette.background, borderBottomColor: palette.border }]}>
+        <TouchableOpacity
+          style={[styles.backButton, { backgroundColor: palette.card, borderColor: palette.border }]}
+          onPress={() => router.back()}
+        >
+          <Ionicons name="chevron-back" size={24} color={palette.accent} />
+        </TouchableOpacity>
+        <Text style={[styles.headerTitle, { color: palette.text }]}>News</Text>
+        <TouchableOpacity style={styles.shareButton} onPress={handleShare}>
+          <Text style={[styles.shareText, { color: palette.accent }]}>Share</Text>
+          <Ionicons name="paper-plane-outline" size={18} color={palette.accent} />
+        </TouchableOpacity>
+      </View>
+
+      <ScrollView 
+        style={styles.content} 
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={styles.contentContainer}
+      >
+        {/* Title - Large Purple */}
+        <Text style={[styles.title, { color: palette.accent }]}>{article.title}</Text>
+
+        {/* Tags Row */}
+        <View style={styles.tagsRow}>
+          {displayTags.map((tag, index) => (
+            <View key={index} style={[styles.tag, { backgroundColor: palette.tagBg, borderColor: palette.border }]}>
+              <Text style={[styles.tagText, { color: palette.tagText }]}>{tag}</Text>
+            </View>
+          ))}
+          {overflowCount > 0 && (
+            <View style={[styles.tagOverflow, { backgroundColor: palette.tagBg, borderColor: palette.border }]}>
+              <Text style={[styles.tagOverflowText, { color: palette.subtext }]}>+{overflowCount}</Text>
+            </View>
+          )}
+        </View>
+
+        {/* Full-width Image */}
+        <View style={[styles.imageContainer, { backgroundColor: palette.imageBg }]}>
+          <NewsImage uri={article.imageUrl} style={styles.image} resizeMode="cover" />
+        </View>
+
+        {/* Author · Date */}
+        <Text style={[styles.authorDate, { color: palette.subtext }]}>
+          {article.author || 'Staff Writer'} · {formatDate(article.publishedAt)}
+        </Text>
+
+        {/* Description (Italic intro) */}
+        <Text style={[styles.description, { color: palette.accent }]}>{article.description}</Text>
+
+        {/* Article Content with highlighted teams */}
+        <View style={styles.articleBody}>
+          {renderHighlightedContent(article.content)}
+        </View>
+
+        {/* Read More Link */}
+        {article.url && article.url !== '#' && (
+          <TouchableOpacity style={[styles.readMoreButton, { borderColor: palette.accent }]}>
+            <Text style={[styles.readMoreText, { color: palette.accent }]}>
+              Read full article on {article.source}
+            </Text>
+            <Ionicons name="open-outline" size={16} color={palette.accent} />
+          </TouchableOpacity>
+        )}
+
+        {/* Source Attribution */}
+        <View style={[styles.sourceAttribution, { borderTopColor: palette.border }]}>
+          <Text style={[styles.sourceLabel, { color: palette.subtext }]}>Source</Text>
+          <Text style={[styles.sourceName, { color: palette.accent }]}>{article.source}</Text>
+        </View>
+
+        <View style={{ height: 40 }} />
+      </ScrollView>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: '#FFFFFF',
+  },
+  header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingTop: 60,
+    paddingBottom: 16,
+    backgroundColor: '#FFFFFF',
+    borderBottomWidth: 1,
+    borderBottomColor: '#F0F0F0',
+  },
+  backButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#F5F5F7',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  headerTitle: {
+    fontSize: 17,
+    fontWeight: '600',
+    color: '#000',
+  },
+  headerRight: {
+    width: 40,
+  },
+  shareButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  shareText: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#37003C',
+  },
+  content: {
+    flex: 1,
+  },
+  contentContainer: {
+    paddingHorizontal: 20,
+    paddingTop: 24,
+  },
+  loadingContainer: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  errorContainer: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 40,
+  },
+  errorText: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#666',
+    marginTop: 16,
+  },
+  retryButton: {
+    marginTop: 20,
+    paddingHorizontal: 24,
+    paddingVertical: 12,
+    backgroundColor: '#37003C',
+    borderRadius: 8,
+  },
+  retryButtonText: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#FFF',
+  },
+
+  // Title - Large Purple (PL Style)
+  title: {
+    fontSize: 28,
+    fontWeight: '800',
+    color: '#37003C',
+    lineHeight: 34,
+    marginBottom: 16,
+  },
+
+  // Tags Row
+  tagsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginBottom: 20,
+  },
+  tag: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    backgroundColor: '#F5F5F7',
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+  },
+  tagText: {
+    fontSize: 13,
+    fontWeight: '500',
+    color: '#333',
+  },
+  tagOverflow: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    backgroundColor: '#F5F5F7',
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
+  },
+  tagOverflowText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#666',
+  },
+
+  // Image
+  imageContainer: {
+    width: '100%',
+    height: 220,
+    borderRadius: 12,
+    overflow: 'hidden',
+    marginBottom: 16,
+    backgroundColor: '#F5F5F7',
+  },
+  image: {
+    width: '100%',
+    height: '100%',
+  },
+
+  // Author & Date
+  authorDate: {
+    fontSize: 14,
+    color: '#666',
+    marginBottom: 20,
+  },
+
+  // Description (Italic intro paragraph)
+  description: {
+    fontSize: 18,
+    fontStyle: 'italic',
+    fontWeight: '500',
+    color: '#37003C',
+    lineHeight: 26,
+    marginBottom: 24,
+  },
+
+  // Article Body
+  articleBody: {
+    marginBottom: 24,
+  },
+  paragraph: {
+    fontSize: 16,
+    color: '#333',
+    lineHeight: 26,
+    marginBottom: 20,
+  },
+  highlightedTeam: {
+    color: '#37003C',
+    fontWeight: '600',
+  },
+
+  // Read More Button
+  readMoreButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 14,
+    borderWidth: 1,
+    borderColor: '#37003C',
+    borderRadius: 8,
+    marginBottom: 24,
+  },
+  readMoreText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#37003C',
+  },
+
+  // Source Attribution
+  sourceAttribution: {
+    paddingTop: 16,
+    borderTopWidth: 1,
+    borderTopColor: '#F0F0F0',
+  },
+  sourceLabel: {
+    fontSize: 12,
+    color: '#999',
+    marginBottom: 4,
+  },
+  sourceName: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#37003C',
+  },
+});
+

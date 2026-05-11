@@ -1,0 +1,40 @@
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+    "chats": {
+      "$chatId": {
+        "messages": {
+          ".read": true,
+          ".indexOn": ["timestamp"],
+          "$messageId": {
+            ".write": "auth != null && $chatId.matches(/^[0-9]+$/) && (!data.exists() ? newData.child('userId').val() === auth.uid : (data.child('userId').val() === auth.uid || (newData.child('userId').val() === data.child('userId').val() && newData.child('username').val() === data.child('username').val() && newData.child('text').val() === data.child('text').val() && newData.child('timestamp').val() === data.child('timestamp').val() && newData.child('clientTimestamp').val() === data.child('clientTimestamp').val() && newData.child('matchMinute').val() === data.child('matchMinute').val() && newData.child('replyTo').val() === data.child('replyTo').val() && newData.child('type').val() === data.child('type').val())))",
+            ".validate": "newData.hasChildren(['userId','username','text','timestamp','clientTimestamp','type']) && newData.child('userId').isString() && newData.child('username').isString() && newData.child('text').isString() && newData.child('text').val().length <= 500 && newData.child('type').isString() && (newData.child('type').val() === 'user' || newData.child('type').val() === 'system')"
+          }
+        }
+      }
+    },
+    "presence": {
+      "chats": {
+        "$chatId": {
+          "$uid": {
+            ".read": true,
+            ".write": "(auth != null && auth.uid === $uid) || (auth == null && $uid.matches(/^guest_[A-Za-z0-9_-]+$/))"
+          }
+        }
+      },
+      "communities": {
+        "$communityId": {
+          "$uid": {
+            ".read": true,
+            ".write": "(auth != null && auth.uid === $uid) || (auth == null && $uid.matches(/^guest_[A-Za-z0-9_-]+$/))"
+          }
+        }
+      }
+    },
+    "counts": {
+      ".read": true,
+      ".write": false
+    }
+  }
+}

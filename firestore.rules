@@ -1,0 +1,451 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return request.auth != null && request.auth.token.admin == true;
+    }
+
+    function validMatchId(matchId) {
+      return matchId is string && matchId.matches('^[0-9]+$');
+    }
+
+    function onlyAllowedCommunityUpdate() {
+      return request.resource.data.diff(resource.data).changedKeys()
+        .hasOnly(["memberCount", "updatedAt", "lastMemberJoinAt"]);
+    }
+
+    function allowedCommunityCreate() {
+      return request.resource.data.keys().hasOnly([
+        "id",
+        "name",
+        "type",
+        "league",
+        "logo",
+        "country",
+        "isNationalTeam",
+        "memberCount",
+        "createdAt",
+        "updatedAt",
+        "lastMemberJoinAt"
+      ]);
+    }
+
+    match /users/{userId} {
+      allow read, write: if isSignedIn() && request.auth.uid == userId;
+    }
+
+    match /usernames/{usernameKey} {
+      allow get: if true;
+      allow list: if false;
+      allow create: if isSignedIn()
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.usernameKey == usernameKey;
+      allow update: if isSignedIn()
+        && resource.data.uid == request.auth.uid
+        && request.resource.data.uid == resource.data.uid
+        && request.resource.data.usernameKey == resource.data.usernameKey;
+      allow delete: if isSignedIn() && resource.data.uid == request.auth.uid;
+    }
+
+    match /phoneLookup/{phoneKey} {
+      allow get: if true;
+      allow list: if false;
+      allow create: if isSignedIn()
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.phone == phoneKey;
+      allow update: if isSignedIn()
+        && resource.data.uid == request.auth.uid
+        && request.resource.data.uid == resource.data.uid
+        && request.resource.data.phone == resource.data.phone;
+      allow delete: if isSignedIn() && resource.data.uid == request.auth.uid;
+    }
+
+    match /users/{userId}/notificationDefaults/{docId} {
+      allow read, write: if isSignedIn() && request.auth.uid == userId;
+    }
+
+    match /users/{userId}/newsFeedback/{articleKey} {
+      allow read, write: if isSignedIn() && request.auth.uid == userId;
+    }
+
+    match /userCommunities/{userId} {
+      allow read, write: if isSignedIn() && request.auth.uid == userId;
+    }
+
+    match /matchNotifications/{docId} {
+      allow read: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isSignedIn()
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.keys().hasOnly([
+          'userId',
+          'matchId',
+          'createdAt',
+          'prefs',
+          'home',
+          'away',
+          'league',
+          'matchDate'
+        ])
+        && validMatchId(request.resource.data.matchId);
+      allow update, delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+    }
+
+    match /matchPredictions/{predictionId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn()
+        && request.resource.data.userId == request.auth.uid
+        && predictionId == request.auth.uid + '_' + request.resource.data.matchId
+        && request.resource.data.keys().hasOnly(['userId', 'matchId', 'prediction', 'updatedAt'])
+        && validMatchId(request.resource.data.matchId)
+        && request.resource.data.prediction in ['home', 'draw', 'away'];
+      // Scoring service writes result/points/scoredAt back after match ends
+      allow update: if isSignedIn()
+        && request.resource.data.diff(resource.data).changedKeys().hasOnly(['result', 'points', 'scoredAt']);
+      allow delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+    }
+
+    match /predictionChallenges/{challengeId} {
+      allow read: if isSignedIn()
+        && (resource.data.createdBy == request.auth.uid
+          || resource.data.challengedUser == request.auth.uid);
+      allow create: if isSignedIn()
+        && request.resource.data.createdBy == request.auth.uid;
+      allow update: if isSignedIn()
+        && (resource.data.createdBy == request.auth.uid
+          || resource.data.challengedUser == request.auth.uid);
+      allow delete: if isSignedIn() && resource.data.createdBy == request.auth.uid;
+    }
+
+    match /predictionStats/{userId} {
+      allow read: if isSignedIn();
+      allow create, update: if isSignedIn()
+        && request.resource.data.userId == request.auth.uid;
+      allow delete: if false;
+    }
+
+    match /communities/{communityId} {
+      allow read: if true;
+      allow create: if isSignedIn() && allowedCommunityCreate();
+      allow delete: if isAdmin();
+      allow update: if isAdmin() || (isSignedIn() && onlyAllowedCommunityUpdate());
+
+      match /members/{uid} {
+        allow read: if true;
+        allow create, update, delete: if isSignedIn() && request.auth.uid == uid;
+      }
+
+      match /news/{articleId} {
+        allow read: if true;
+        allow write: if isAdmin();
+      }
+
+      match /roster/{playerId} {
+        allow read: if true;
+        allow write: if isAdmin();
+      }
+
+      match /groups/{groupId} {
+        allow read: if true;
+        allow write: if isAdmin();
+      }
+    }
+
+    match /matches/{matchId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    match /chats/{chatId}/messages/{messageId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn()
+        && validMatchId(chatId)
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.keys().hasOnly([
+          'userId',
+          'username',
+          'text',
+          'timestamp',
+          'clientTimestamp',
+          'matchMinute',
+          'reactions',
+          'replyTo',
+          'type'
+        ]);
+      allow update, delete: if isSignedIn()
+        && validMatchId(chatId)
+        && resource.data.userId == request.auth.uid;
+    }
+
+    match /supportTickets/{ticketId} {
+      allow create: if isSignedIn()
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.category is string
+        && request.resource.data.message is string
+        && request.resource.data.message.size() >= 10
+        && request.resource.data.status == "open";
+      allow read: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow update, delete: if false;
+    }
+
+    match /newsArticleStats/{articleKey} {
+      allow read: if true;
+      allow create, update: if isSignedIn()
+        && request.resource.data.keys().hasOnly(['upCount', 'downCount', 'updatedAt']);
+      allow delete: if false;
+    }
+
+    // Prediction leaderboard — user-keyed docs written client-side by scoring trigger;
+    // gameweek-keyed snapshot docs written by admin SDK (bypasses rules).
+    // Client writes restricted to own userId doc only.
+    match /predictionLeaderboard/{docId} {
+      allow read: if isSignedIn();
+      allow create, update: if isSignedIn() && docId == request.auth.uid;
+      allow delete: if false;
+    }
+
+    match /predictionLeaderboardWeekly/{docId} {
+      allow read: if isSignedIn();
+      allow write: if false;
+      allow delete: if false;
+    }
+
+    // Fantasy leagues — all writes go through callable functions (admin SDK bypasses rules).
+    // Client rule retained only for the legacy client-side path during migration.
+    match /fantasyLeagues/{leagueId} {
+      allow read: if isSignedIn();
+      // Callable functions (admin SDK) bypass these rules entirely.
+      // Narrow client writes to the owner updating their own league name/emoji only.
+      allow create: if false; // callable createLeague only
+      allow update: if isSignedIn()
+        && resource.data.ownerId == request.auth.uid
+        && request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(['name', 'emoji', 'isPrivate', 'updatedAt']);
+      allow delete: if false; // callable leaveLeague handles deletion
+    }
+
+    // Fantasy league members — written exclusively by callable functions (admin SDK).
+    match /fantasyLeagueMembers/{memberId} {
+      allow read: if isSignedIn();
+      allow write: if false; // callable joinLeague / leaveLeague only
+    }
+
+    match /systemLeagues/{competitionId} {
+      allow read: if isSignedIn();
+      allow write: if false; // seedSystemLeagues callable/schedule only
+    }
+
+    match /systemConfig/{docId} {
+      allow read: if true;
+      allow write: if false; // Cloud Functions only
+    }
+
+    match /inviteCodes/{code} {
+      allow read: if isSignedIn();
+      allow write: if false; // callable create/join flows only
+    }
+
+    match /chips/{chipId} {
+      allow read: if isSignedIn()
+        && resource.data.userId == request.auth.uid;
+      allow write: if false; // activateChip callable only
+    }
+
+    match /notificationLimits/{limitId} {
+      allow read, write: if false; // server-side notification throttle only
+    }
+
+    match /gameweeks/{gameweekId} {
+      allow read: if isSignedIn();
+      allow write: if false; // scheduled deadline/scoring functions only
+
+      match /squadSnapshots/{teamId} {
+        allow read: if isSignedIn()
+          && resource.data.userId == request.auth.uid;
+        allow write: if false;
+      }
+    }
+
+    match /players/{playerId} {
+      allow read: if isSignedIn();
+      allow write: if false; // refreshPlayerPool/seed scripts with admin SDK only
+    }
+
+    // Fantasy teams — private to the owner
+    match /fantasyTeams/{teamId} {
+      allow read: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isSignedIn()
+        && request.resource.data.userId == request.auth.uid;
+      allow update: if isSignedIn()
+        && resource.data.userId == request.auth.uid;
+      allow delete: if isSignedIn()
+        && resource.data.userId == request.auth.uid;
+    }
+
+    // Community posts — readable while browsing, signed-in users can write
+    match /communityPosts/{postId} {
+      allow read: if true;
+      allow create: if isSignedIn()
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.keys().hasOnly([
+          'communityId',
+          'communityType',
+          'communityName',
+          'userId',
+          'username',
+          'title',
+          'body',
+          'likesCount',
+          'commentCount',
+          'createdAt'
+        ])
+        && request.resource.data.communityId is string
+        && request.resource.data.communityType in ['team', 'league', 'worldcup']
+        && request.resource.data.communityName is string
+        && request.resource.data.communityName.size() >= 1
+        && request.resource.data.communityName.size() <= 120
+        && request.resource.data.userId is string
+        && request.resource.data.username is string
+        && request.resource.data.username.size() >= 1
+        && request.resource.data.username.size() <= 40
+        && request.resource.data.title is string
+        && request.resource.data.title.size() >= 3
+        && request.resource.data.title.size() <= 200
+        && request.resource.data.body is string
+        && request.resource.data.body.size() <= 2000
+        && request.resource.data.likesCount == 0
+        && request.resource.data.commentCount == 0
+        && request.resource.data.createdAt is string;
+      allow update: if isSignedIn()
+        && (resource.data.userId == request.auth.uid
+          || request.resource.data.diff(resource.data).changedKeys().hasOnly(['likesCount', 'commentCount']));
+      allow delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+
+      match /comments/{commentId} {
+        allow read: if true;
+        allow create: if isSignedIn()
+          && request.resource.data.userId == request.auth.uid
+          && request.resource.data.keys().hasOnly([
+            'postId',
+            'userId',
+            'username',
+            'text',
+            'likesCount',
+            'createdAt'
+          ])
+          && request.resource.data.postId == postId
+          && request.resource.data.userId is string
+          && request.resource.data.username is string
+          && request.resource.data.username.size() >= 1
+          && request.resource.data.username.size() <= 40
+          && request.resource.data.text is string
+          && request.resource.data.text.size() >= 1
+          && request.resource.data.text.size() <= 500
+          && request.resource.data.likesCount == 0
+          && request.resource.data.createdAt is string;
+        allow delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+        allow update: if false;
+      }
+    }
+
+    // Community post likes — keyed by postId_userId
+    match /communityPostLikes/{likeId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn()
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.keys().hasOnly(['postId', 'userId', 'createdAt'])
+        && request.resource.data.postId is string
+        && request.resource.data.userId is string
+        && request.resource.data.createdAt is string
+        && likeId == request.resource.data.postId + '_' + request.auth.uid;
+      allow delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+    }
+
+    // Gameweek predictions — written via callable (admin SDK), readable by owner
+    match /gameweekPredictions/{docId} {
+      allow read: if isSignedIn() && resource.data.uid == request.auth.uid;
+      allow write: if false; // callable function only (admin SDK)
+    }
+
+    // Player scores — written by Cloud Functions (admin SDK bypasses rules)
+    match /playerScores/{gameweekKey} {
+      allow read: if true;
+      allow write: if false; // admin SDK only
+
+      match /players/{playerId} {
+        allow read: if true;
+        allow write: if false; // admin SDK only
+      }
+    }
+
+    // App config — read by scheduled function and app clients
+    match /config/{docId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    // App-level match data — written by server scheduled functions, read by all clients
+    match /appData/{docId} {
+      allow read: if true;
+      allow write: if false; // server-side Cloud Functions (admin SDK) only
+    }
+
+    // Shared news cache — any signed-in user can write (first-fetcher populates for others)
+    match /newsCache/{cacheKey} {
+      allow read: if true;
+      allow create, update: if isSignedIn()
+        && request.resource.data.articles is list
+        && request.resource.data.articles.size() <= 30;
+      allow delete: if false;
+    }
+
+    // Prediction slips — written by callable (admin SDK bypasses rules)
+    match /slips/{slipId} {
+      allow read: if isSignedIn() && (
+        resource.data.userId == request.auth.uid
+        || resource.data.challengedUserId == request.auth.uid
+      );
+      allow write: if false; // submitSlip callable only
+    }
+
+    // H2H leagues — readable by members, written by callables
+    match /h2hLeagues/{leagueId} {
+      allow read: if isSignedIn()
+        && resource.data.members.hasAny([request.auth.uid]);
+      allow write: if false; // callable functions only
+    }
+
+    // User stats — readable by the owner only
+    match /userStats/{uid} {
+      allow read: if isSignedIn() && request.auth.uid == uid;
+      allow write: if false; // updateUserStats callable only
+    }
+
+    // Match result cache — readable by signed-in users, written by admin callable
+    match /matchResultCache/{matchId} {
+      allow read: if true;
+      allow write: if false; // cacheMatchResult callable only
+    }
+
+    // Shared live/final match detail snapshots — written by server, read by signed-in users
+    match /matchDetailCache/{matchId} {
+      allow read: if true;
+      allow write: if false;
+    }
+
+    // Client-written shared match cache — first user to fetch populates for all others.
+    // Reduces direct football API calls when no server-side functions are deployed.
+    match /clientMatchCache/{cacheKey} {
+      allow read: if true;
+      allow create, update: if isSignedIn()
+        && cacheKey in ['live', 'upcoming', 'results']
+        && request.resource.data.matches is list
+        && request.resource.data.cacheKey == cacheKey;
+      allow delete: if false;
+    }
+
+  }
+}

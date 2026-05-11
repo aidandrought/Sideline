@@ -1,0 +1,88 @@
+{
+  "expo": {
+    "name": "Sideline",
+    "slug": "ultrafootball",
+    "version": "1.0.1",
+    "orientation": "portrait",
+    "icon": "./assets/images/Official App Store Logo.png",
+    "scheme": "sideline",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "ios": {
+      "supportsTablet": true,
+      "icon": "./assets/images/Official App Store Logo.png",
+      "bundleIdentifier": "com.aidan.ultrafootball",
+      "buildNumber": "2",
+      "infoPlist": {
+        "NSAppTransportSecurity": {
+          "NSAllowsArbitraryLoads": false,
+          "NSExceptionDomains": {
+            "v3.football.api-sports.io": {
+              "NSExceptionAllowsInsecureHTTPLoads": false,
+              "NSIncludesSubdomains": true
+            },
+            "media.api-sports.io": {
+              "NSExceptionAllowsInsecureHTTPLoads": false,
+              "NSIncludesSubdomains": true
+            }
+          }
+        },
+        "ITSAppUsesNonExemptEncryption": false
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#E6F4FE",
+        "foregroundImage": "./assets/images/Official App Store Logo.png",
+        "monochromeImage": "./assets/images/sideline-notification-icon.png"
+      },
+      "edgeToEdgeEnabled": true,
+      "predictiveBackGestureEnabled": false,
+      "package": "com.aidan.ultrafootball"
+    },
+    "web": {
+      "output": "static",
+      "favicon": "./assets/images/Official App Store Logo.png"
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/images/Official App Store Logo.png",
+          "imageWidth": 170,
+          "resizeMode": "contain",
+          "backgroundColor": "#060B14",
+          "dark": {
+            "image": "./assets/images/Official App Store Logo.png",
+            "backgroundColor": "#060B14"
+          }
+        }
+      ],
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/images/sideline-notification-icon.png",
+          "color": "#4AAEFF"
+        }
+      ],
+      "expo-font"
+    ],
+    "experiments": {
+      "typedRoutes": true,
+      "reactCompiler": true
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "7ff6c63f-f00e-4249-9357-b4d5a0ee65d0"
+      }
+    },
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/7ff6c63f-f00e-4249-9357-b4d5a0ee65d0"
+    }
+  }
+}
