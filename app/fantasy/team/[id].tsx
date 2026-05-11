@@ -997,8 +997,7 @@ export default function TeamBuilderScreen() {
           : squad.length}
         onAdd={(player) => {
           addPlayer(player, pickerPosition === null);
-          if (pickerPosition === null) setPickerVisible(false);
-          // Formation mode: stay open so user can fill all slots for this position
+          // Always stay open — user closes manually or navigates with arrows
         }}
         onRemove={removePlayer}
         onClose={() => setPickerVisible(false)}
@@ -1129,7 +1128,7 @@ function PlayerPickerModal({
   onAdd: (p: FantasyPlayer) => void;
   onRemove: (id: number) => void;
   onClose: () => void;
-  onPositionChange?: (pos: PlayerPosition) => void;
+  onPositionChange?: (pos: PlayerPosition | null) => void;
   palette: any;
   search: string;
   onSearchChange: (s: string) => void;
@@ -1147,9 +1146,11 @@ function PlayerPickerModal({
     }
   }, [pickerSort]);
 
-  const posIndex = !isBenchMode ? POSITIONS.indexOf(position!) : -1;
-  const prevPos = posIndex >= 0 ? POSITIONS[(posIndex - 1 + POSITIONS.length) % POSITIONS.length] : null;
-  const nextPos = posIndex >= 0 ? POSITIONS[(posIndex + 1) % POSITIONS.length] : null;
+  // Navigation order when pressing right: FWD → MID → DEF → GK → Bench (null)
+  const NAV_ORDER: Array<PlayerPosition | null> = ['FWD', 'MID', 'DEF', 'GK', null];
+  const navIndex = isBenchMode ? 4 : NAV_ORDER.indexOf(position!);
+  const prevNavPos = NAV_ORDER[(navIndex - 1 + NAV_ORDER.length) % NAV_ORDER.length];
+  const nextNavPos = NAV_ORDER[(navIndex + 1) % NAV_ORDER.length];
 
   const pool = useMemo(() => {
     if (!visible) return [];
@@ -1192,16 +1193,16 @@ function PlayerPickerModal({
               </View>
             </View>
             <View style={styles.pickerHeaderActions}>
-              {!isBenchMode && onPositionChange && (
+              {onPositionChange && (
                 <>
                   <TouchableOpacity
-                    onPress={() => { onPositionChange!(prevPos!); onSearchChange(''); }}
+                    onPress={() => { onPositionChange(prevNavPos); onSearchChange(''); }}
                     style={styles.pickerNavBtn}
                   >
                     <Ionicons name="chevron-back" size={20} color={palette.text} />
                   </TouchableOpacity>
                   <TouchableOpacity
-                    onPress={() => { onPositionChange!(nextPos!); onSearchChange(''); }}
+                    onPress={() => { onPositionChange(nextNavPos); onSearchChange(''); }}
                     style={styles.pickerNavBtn}
                   >
                     <Ionicons name="chevron-forward" size={20} color={palette.text} />
